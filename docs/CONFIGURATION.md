@@ -90,11 +90,18 @@ when to reach for each brain/tier.
 
 ### Writing `done_when` commands (Windows note)
 
-`assign`'s `done_when` runs via `cmd /c`. A **quoted** executable path can trip cmd's quote
-handling (`'"C:/…/python.exe"' is not recognized`). If your interpreter path has **no spaces**,
-pass it **unquoted with backslashes**, e.g. `C:\path\to\.venv\Scripts\python.exe check.py`. If the
-path has spaces, prefer putting the tool on `PATH` (so `done_when="python check.py"`) or wrap the
-whole command in a `.bat`/`.cmd` and call that.
+`assign`'s `done_when` runs via `cmd /c`, which mangles **any quoted multi-word argument**. Two
+forms that bite:
+- A **quoted executable path**: `"C:/…/python.exe" check.py` → `'"C:/…/python.exe"' is not recognized`.
+- A **quoted multi-word search string**: `findstr /C:"export function foo" file.ts` → cmd splits it and
+  findstr reports `FINDSTR: Cannot open function` (it treats the words as filenames), so `done_when`
+  always fails and nothing applies.
+
+Guidance: avoid quoted multi-word args. Use an unquoted path with **no spaces** (backslashes:
+`C:\path\to\.venv\Scripts\python.exe check.py`) and a **single-token** search
+(`findstr foo file.ts`). If you truly need spaces/quotes, wrap the whole command in a `.bat`/`.cmd`
+and call that as `done_when`. A silent `done_when` failure looks like "the worker did nothing" —
+but the real tree is never touched (apply is gated on `done_passed`), so it's safe, just confusing.
 
 ## Other config blocks (in `config/qwen.json`)
 
