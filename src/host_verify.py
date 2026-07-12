@@ -29,10 +29,20 @@ from typing import Any
 
 _ROOT = Path(__file__).resolve().parent.parent
 _CONFIG_PATH = _ROOT / "config" / "qwen.json"
+_LOCAL_CONFIG_PATH = _ROOT / "config" / "qwen.local.json"
 
 
 def _cfg() -> dict[str, Any]:
-    return json.loads(_CONFIG_PATH.read_text(encoding="utf-8")).get("host_harness", {})
+    """host_harness config, with the gitignored qwen.local.json overlay merged over the
+    committed qwen.json (real engine/project paths live in the local overlay, not in git)."""
+    base = json.loads(_CONFIG_PATH.read_text(encoding="utf-8")).get("host_harness", {})
+    if _LOCAL_CONFIG_PATH.exists():
+        try:
+            overlay = json.loads(_LOCAL_CONFIG_PATH.read_text(encoding="utf-8")).get("host_harness", {})
+            base = {**base, **overlay}
+        except (json.JSONDecodeError, OSError):
+            pass
+    return base
 
 
 def editor_running() -> bool:

@@ -30,14 +30,14 @@
     "engine_managed": true,
     "observed_vram_used_mib": 31900,
     "vram_total_mib": 32607,
-    "notes": "Ollama auto-places attention/shared layers on the RTX 5090 (VRAM sits ~31-32 GB, just under the 32.6 GB cap) and streams MoE experts from the 64 GB system RAM. GPU util is low (memory-bound, expected for MoE with 3B active).",
+    "notes": "Ollama auto-places attention/shared layers on the GPU (VRAM sits just under the card's cap) and streams MoE experts from system RAM. GPU util is low (memory-bound, expected for MoE with few active params).",
     "vram_tight_policy": "DO NOT downgrade the quant (user directive: stay on Q4_K_M). If VRAM approaches OOM, the lever is CONTEXT SIZE: cap num_ctx (KV cache grows with context). Ollama default context is modest; only raise num_ctx deliberately and watch nvidia-smi."
   },
   "keep_alive": {
     "strategy": "per-request",
     "value": "30m",
-    "rationale": "Like ComfyUI: first request loads ~48 GB (cold ~55 s); requests within keep_alive reuse the resident model (warm ~0.1 s). Measured: 0.13 s warm load.",
-    "do_not_use_infinite": "A warm model holds ~32 GB VRAM (the whole 5090), which blocks heavy ComfyUI/UE GPU work. 30m keeps it instant during a coding session but auto-unloads when idle so the GPU returns to other apps. GPU is taken in turns, not shared."
+    "rationale": "First request loads the model (~48 GB, cold ~55 s); requests within keep_alive reuse the resident model (warm ~0.1 s). Measured: 0.13 s warm load.",
+    "do_not_use_infinite": "A warm model holds the whole GPU, which blocks other GPU work. 30m keeps it instant during a coding session but auto-unloads when idle so the GPU returns to other apps. GPU is taken in turns, not shared."
   },
   "baseline_perf": {
     "measured_on": "2026-06-30",
@@ -98,9 +98,9 @@
       "typescript": {
         "enabled": true,
         "checks": ["tsc"],
-        "tsc_cmd": ["node", "E:/projects/qwen-pipeline/node_modules/typescript/bin/tsc", "--noEmit", "--strict", "--skipLibCheck"],
+        "tsc_cmd": ["node", "node_modules/typescript/bin/tsc", "--noEmit", "--strict", "--skipLibCheck"],
         "timeout_s": 120,
-        "_note": "ON for SELF-CONTAINED TS (pinned typescript 5.7.2 in the pipeline; invoked via `node` so Windows resolution is reliable). `tsc --noEmit --strict` type-checks a standalone snippet in ms-to-seconds and catches real type errors. LIMITATION: a snippet that imports from a specific PROJECT won't resolve those imports (the project's node_modules/types aren't on the temp file's path) → such a snippet fails the gate. For project-coupled TS, use `assign(...)` instead: the Aider worker reads the real repo and the `done_when` is the project's OWN test/typecheck (e.g. `npm test`), which resolves everything. (UE_MCP itself has no node_modules, so its project-aware tsc still needs `npm install` there.)"
+        "_note": "ON for SELF-CONTAINED TS (pinned typescript in package.json; invoked via `node`). `tsc --noEmit --strict` type-checks a standalone snippet in ms-to-seconds and catches real type errors. The default path is relative to the repo root; set an absolute path in config/qwen.local.json if the server's working directory differs. LIMITATION: a snippet that imports from a specific PROJECT won't resolve those imports → such a snippet fails the gate. For project-coupled TS, use `assign(...)` instead: the Aider worker reads the real repo and the `done_when` is the project's OWN test/typecheck (e.g. `npm test`)."
       },
       "cpp": {
         "enabled": true,
@@ -111,7 +111,7 @@
           {"pattern": "\\b(TODO|FIXME)\\b|not\\s+implemented|/\\*\\s*\\.\\.\\.\\s*\\*/|//\\s*\\.\\.\\.", "category": "edge_case", "message": "Placeholder / incomplete body — the snippet looks unfinished."},
           {"pattern": "#\\s*include\\s*[<\"](openssl|curl/|boost/)", "category": "api_misuse", "message": "New third-party dependency include — UE plugin must add NO new third-party deps; use engine APIs."}
         ],
-        "_note": "ON as a FAST (ms) heuristic lint ONLY — brace/paren balance (comment/string-aware), leaked-fence, and banned-pattern checks. It does NOT compile or type-check: an isolated UE C++ fragment can't resolve engine headers, and a full UE build is too slow per-delegate. REAL C++ verification stays on the batched §9 host-harness (E:/projects/UE_MCP_Host) + Claude's own review (routing.md §5). banned_patterns is tunable — grow it from recurring corrections."
+        "_note": "ON as a FAST (ms) heuristic lint ONLY — brace/paren balance (comment/string-aware), leaked-fence, and banned-pattern checks. It does NOT compile or type-check: an isolated C++ fragment can't resolve project/engine headers, and a full native build is too slow per-delegate. REAL C++ verification stays on the batched host-harness (see host_harness config) + the orchestrator's own review. banned_patterns is tunable — grow it from recurring corrections."
       }
     }
   },
@@ -125,8 +125,8 @@
     }
   },
   "agent": {
-    "_comment": "Phase 7 — file-aware worker agents (Aider in a disposable git worktree). PROJECT-AGNOSTIC: the `assign` MCP tool takes repo=<abs path> + done_when=<shell cmd>, so it works on ANY git repo, not just UE_MCP. Per-repo overrides via <repo>/.qwen-pipeline.json (its `agent` block merges over this). Reuse in another project by pointing `repo` at it — nothing here is UE_MCP-specific.",
-    "aider_exe": "E:/projects/qwen-pipeline/.aider-venv/Scripts/aider.exe",
+    "_comment": "File-aware worker agents (Aider in a disposable git worktree). PROJECT-AGNOSTIC: the `assign` MCP tool takes repo=<abs path> + done_when=<shell cmd>, so it works on ANY git repo. Per-repo overrides via <repo>/.qwen-pipeline.json (its `agent` block merges over this). Set aider_exe to your isolated Aider venv's executable in config/qwen.local.json (e.g. .aider-venv/Scripts/aider.exe on Windows).",
+    "aider_exe": "aider",
     "worktree_root": "",
     "max_iters": 3,
     "map_tokens": 512,
@@ -143,14 +143,14 @@
     }
   },
   "host_harness": {
-    "_comment": "§6 Tier-2 batched C++ verify (NOT per-delegate). `python src/host_verify.py [--tests]` builds the UE host project and optionally runs the plugins' UE automation tests headless. Slow — run after a batch of C++ work / before commit, with the editor closed. Version-pinned to UE 5.8; add other engine paths when the version matrix expands.",
-    "engine_build_bat": "D:/games/Epic Games/UE_5.8/Engine/Build/BatchFiles/Build.bat",
-    "editor_cmd": "D:/games/Epic Games/UE_5.8/Engine/Binaries/Win64/UnrealEditor-Cmd.exe",
-    "project": "E:/projects/UE_MCP_Host/UE_MCP_Host.uproject",
-    "target": "UE_MCP_HostEditor",
+    "_comment": "OPTIONAL, PROJECT-SPECIFIC batched build/test verify (NOT per-delegate). `python src/host_verify.py [--tests]` builds a host project and optionally runs its tests headless — a heavier 'Tier-2' check to run after a batch of native work / before commit. The example below is an Unreal Engine host project; set your real engine + project paths in config/qwen.local.json (gitignored) so this committed file stays portable. Leave empty to disable.",
+    "engine_build_bat": "",
+    "editor_cmd": "",
+    "project": "",
+    "target": "",
     "platform": "Win64",
     "config": "Development",
-    "test_filter": "McpAutomationBridge+UnrealAgent",
+    "test_filter": "",
     "build_timeout_s": 1800,
     "test_timeout_s": 900
   },

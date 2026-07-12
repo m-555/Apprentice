@@ -43,7 +43,7 @@ Two worker "brains" Claude delegates to (Claude itself is the boss/judge, not a 
          "enabled": true,
          "project": "your-gcp-project-id",
          "location": "us-central1",
-         "credentials_file": "E:/path/to/service-account.json",
+         "credentials_file": "/path/to/service-account.json",
          "default_model": "flash",
          "models": { "flash": "gemini-2.5-flash", "pro": "gemini-2.5-pro" }
        }
