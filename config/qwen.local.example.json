@@ -1,0 +1,38 @@
+{
+  "_comment": "TEMPLATE. Copy this file to `config/qwen.local.json` (gitignored) and fill in real values. At load time the server DEEP-MERGES qwen.local.json OVER qwen.json, so put ALL secrets, your GCP project id, credential paths, exact model ids, and `enabled` flags here — never in the committed qwen.json. Delete keys you don't override.",
+
+  "providers": {
+    "gemini": {
+      "enabled": true,
+      "project": "your-gcp-project-id",
+      "location": "us-central1",
+      "credentials_file": "E:/path/to/vertex-service-account.json",
+      "default_model": "flash",
+      "models": {
+        "_note": "BARE Vertex model ids (google-genai SDK, used by the `delegate` tool).",
+        "flash": "gemini-2.5-flash",
+        "pro": "gemini-2.5-pro"
+      }
+    }
+  },
+
+  "agent": {
+    "models": {
+      "gemini": {
+        "default_model": "flash",
+        "models": {
+          "_note": "litellm ids (used by the `assign` tool / Aider). MUST use the `vertex_ai/` prefix for a service account — NOT `gemini/`.",
+          "flash": "vertex_ai/gemini-2.5-flash",
+          "pro": "vertex_ai/gemini-2.5-pro"
+        }
+      }
+    }
+  },
+
+  "metering": {
+    "budgets": {
+      "_note": "Optional daily ceilings so a runaway retry loop can't drain Vertex credits. 0 = no cap.",
+      "gemini_tokens_per_day": 2000000
+    }
+  }
+}

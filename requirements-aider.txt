@@ -1,0 +1,11 @@
+# Optional: the file-aware `assign` agent runtime (Aider).
+# Install into a SEPARATE, isolated venv (not the server venv) so Aider's large dependency
+# tree never collides with the pinned MCP server deps:
+#
+#   python -m venv .aider-venv
+#   .aider-venv/Scripts/pip install -r requirements-aider.txt      # Windows
+#   .aider-venv/bin/pip     install -r requirements-aider.txt      # Linux/macOS
+#
+# Then point config/qwen.json -> agent.aider_exe at .aider-venv's aider executable.
+# Aider drives the worker model (local Ollama qwen, or Gemini via litellm's vertex_ai/ path).
+aider-chat==0.86.1

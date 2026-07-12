@@ -1,0 +1,11 @@
+# Qwen pipeline MCP server — core deps, PINNED (no unpinned installs; 2026 stdio advisory).
+# Bump deliberately + re-test, never float.
+#
+# Optional provider/runtime deps live in separate files so a minimal (qwen-only) install
+# stays lean:
+#   requirements-gemini.txt   → the Gemini/Vertex `delegate` provider (google-genai)
+#   requirements-aider.txt    → the file-aware `assign` agent (Aider) — install in .aider-venv
+mcp==1.28.1
+numpy==2.4.6
+
+

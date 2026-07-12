@@ -1,0 +1,4 @@
+# Optional: the Gemini / Vertex AI provider for the `delegate` tool.
+# Install into the SAME venv as the server:  pip install -r requirements-gemini.txt
+# Then configure providers.gemini in config/qwen.local.json and set enabled=true.
+google-genai==2.11.0

@@ -1,0 +1,41 @@
+# ── Secrets & machine-local config (NEVER commit) ───────────────────────────
+# Real project id, credential paths, model ids, enabled flags:
+config/qwen.local.json
+# Service-account JSON, API keys, tokens:
+secrets/
+*.json.key
+*-service-account*.json
+.env
+.env.*
+
+# ── Proprietary / generated data (may contain private code — keep local) ─────
+# Corrections store + retrieval index (may hold proprietary code):
+corrections/*.jsonl
+# Worker output store + extracted patches:
+outputs/
+# Per-delegation cost/outcome log:
+metrics/
+
+# ── Large local assets ───────────────────────────────────────────────────────
+# Ollama blob/manifest store (tens of GB):
+models/
+
+# ── Virtual environments & installed deps ────────────────────────────────────
+.venv/
+.aider-venv/
+node_modules/
+
+# ── Python caches ────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# ── Editor / OS ──────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
