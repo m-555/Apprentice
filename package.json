@@ -1,8 +1,8 @@
 {
-  "name": "qwen-pipeline-gate-tooling",
+  "name": "apprentice-gate-tooling",
   "version": "1.0.0",
   "private": true,
-  "description": "Pinned tooling for the §6.1 gate's project-aware TS check. Not shipped; not part of the product repo.",
+  "description": "Pinned tooling (TypeScript) for the Apprentice pipeline's mechanical gate — the project-aware TS type-check.",
   "devDependencies": {
     "typescript": "5.7.2"
   }

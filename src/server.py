@@ -1,4 +1,5 @@
-"""Qwen pipeline MCP server (stdio).
+"""Apprentice — MCP server (stdio). (Project formerly "qwen-pipeline"; the MCP server id
+stays "qwen" and the per-repo override file stays ".qwen-pipeline.json" for compatibility.)
 
 Three tools (schemas load into context every turn — keep the list small):
   - delegate(task, role, provider?, context?) -> generated code + gate/id footer (str)

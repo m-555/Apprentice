@@ -1,12 +1,18 @@
-# Qwen Pipeline — local multi-provider code-delegation worker
+# Apprentice
 
-A local worker pipeline that lets **Claude Code** (orchestrator + reviewer) offload
-routine code generation to cheaper models — primarily a **local Qwen 80B** running on a
-single RTX 5090 — then review, correct, and learn from the results.
+**A local, multi-provider code-delegation pipeline.** A master orchestrator (Claude Code)
+delegates routine coding to *apprentice* models — a **local Qwen 80B** on your own GPU (via
+Ollama) and **Gemini** (Vertex AI) — then mechanically verifies, corrects, and *learns* from
+the results over time via in-context retrieval. The expensive brain is spent on judgment; the
+cheap brains do the typing.
 
-This folder is a **sibling of the product repo** (`E:\projects\UE_MCP`), deliberately kept
-**outside** it so the pipeline code and the (possibly proprietary) corrections store stay
-out of that repo's git history.
+The apprentices sit behind one small **MCP server** exposing three tools (`delegate`, `assign`,
+`log_correction`), so any MCP-capable orchestrator can drive them. New here? Start with
+**[docs/MULTI_AGENT.md](docs/MULTI_AGENT.md)**.
+
+> **Note:** the project was formerly `qwen-pipeline`. Its local working directory and the MCP
+> server id remain `qwen-pipeline` / `qwen` (renaming them would break venv paths and the MCP
+> registration); only the project/repo brand is **Apprentice**.
 
 > Plan of record: `E:\projects\UE_MCP\Design\IMPLEMENTATION_PLAN_agent.md`.
 > Per-session dev workflow: `E:\projects\UE_MCP\CLAUDE.local.md` (gitignored).
