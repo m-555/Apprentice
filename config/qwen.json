@@ -98,9 +98,9 @@
       "typescript": {
         "enabled": true,
         "checks": ["tsc"],
-        "tsc_cmd": ["node", "node_modules/typescript/bin/tsc", "--noEmit", "--strict", "--skipLibCheck"],
+        "tsc_cmd": ["node", "node_modules/typescript/bin/tsc", "--noEmit", "--strict", "--skipLibCheck", "--target", "ES2020"],
         "timeout_s": 120,
-        "_note": "ON for SELF-CONTAINED TS (pinned typescript in package.json; invoked via `node`). `tsc --noEmit --strict` type-checks a standalone snippet in ms-to-seconds and catches real type errors. The default path is relative to the repo root; set an absolute path in config/qwen.local.json if the server's working directory differs. LIMITATION: a snippet that imports from a specific PROJECT won't resolve those imports → such a snippet fails the gate. For project-coupled TS, use `assign(...)` instead: the Aider worker reads the real repo and the `done_when` is the project's OWN test/typecheck (e.g. `npm test`)."
+        "_note": "ON for SELF-CONTAINED TS (pinned typescript in package.json; invoked via `node`). `tsc --noEmit --strict` type-checks a standalone snippet in ms-to-seconds and catches real type errors. `--target ES2020` is REQUIRED: without it tsc defaults to ES5 and falsely rejects modern APIs (Number.isFinite, Math.trunc, Object.entries, optional chaining, …) that real projects use — set this to match your project's tsconfig `target`. The path is relative to the repo root; set an absolute path in config/qwen.local.json if the server's working directory differs. LIMITATION: a snippet that imports from a specific PROJECT won't resolve those imports → use `assign(...)` for project-coupled TS (its `done_when` is the project's OWN typecheck)."
       },
       "cpp": {
         "enabled": true,

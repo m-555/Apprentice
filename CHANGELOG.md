@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+- **TypeScript gate falsely failed modern code.** The `tsc` gate ran without `--target`, so it
+  defaulted to ES5 and rejected ES2015+ APIs (`Number.isFinite`, `Math.trunc`, `Object.entries`,
+  optional chaining, …) with `TS2550`. Added `--target ES2020` to the default `tsc_cmd`. Set it to
+  match your project's tsconfig `target`.
+
 ### Documentation
 - Document that newer/preview Gemini models (e.g. Gemini 3.x) are served **only** on the Vertex
   `global` endpoint — a `404 NOT_FOUND` in a regional `location` means switch to `"global"`.
