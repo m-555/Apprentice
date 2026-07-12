@@ -1,3 +1,6 @@
+# ── Personal dev notes (local only) ──────────────────────────────────────────
+SESSION_HANDOFF.md
+
 # ── Secrets & machine-local config (NEVER commit) ───────────────────────────
 # Real project id, credential paths, model ids, enabled flags:
 config/qwen.local.json
