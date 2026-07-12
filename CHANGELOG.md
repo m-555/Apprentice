@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Documentation
+- Document that newer/preview Gemini models (e.g. Gemini 3.x) are served **only** on the Vertex
+  `global` endpoint — a `404 NOT_FOUND` in a regional `location` means switch to `"global"`.
+- Document the Windows `done_when` quoting gotcha (`cmd /c` + quoted exe paths).
+- `qwen.local.example.json` now shows a Gemini 3.x + `global` configuration.
+
 ## [0.1.0] — 2026-07-12
 
 First public release as **Apprentice** (formerly the internal `qwen-pipeline`).

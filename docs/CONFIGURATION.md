@@ -62,6 +62,13 @@ Two worker "brains" Claude delegates to (Claude itself is the boss/judge, not a 
    }
    ```
 
+> ⚠️ **Region (`location`) matters for newer models.** Preview / newest-generation models
+> (e.g. **Gemini 3.x**) are served **only on the `global` endpoint** — set
+> `providers.gemini.location: "global"`. Older GA models (2.5) also work in regional endpoints
+> like `us-central1`. A `404 NOT_FOUND` ("model not found … in the specified region") means the
+> model isn't served in that `location` — switch to `"global"`. (Verified: `gemini-3.5-flash` and
+> `gemini-3.1-pro-preview` return 404 in `us-central1` but work in `global`.)
+
 > ⚠️ **The two model-id forms differ — this is the #1 gotcha.**
 > - `providers.gemini.models.*` are **bare** Vertex ids (used by the `delegate` tool via the
 >   `google-genai` SDK), e.g. `gemini-2.5-pro`.
@@ -80,6 +87,14 @@ for the Aider subprocess from `providers.gemini`, so credentials are configured 
 
 Empty `model` → the provider's `default_model` (`flash`). See [MULTI_AGENT.md](MULTI_AGENT.md) for
 when to reach for each brain/tier.
+
+### Writing `done_when` commands (Windows note)
+
+`assign`'s `done_when` runs via `cmd /c`. A **quoted** executable path can trip cmd's quote
+handling (`'"C:/…/python.exe"' is not recognized`). If your interpreter path has **no spaces**,
+pass it **unquoted with backslashes**, e.g. `C:\path\to\.venv\Scripts\python.exe check.py`. If the
+path has spaces, prefer putting the tool on `PATH` (so `done_when="python check.py"`) or wrap the
+whole command in a `.bat`/`.cmd` and call that.
 
 ## Other config blocks (in `config/qwen.json`)
 
