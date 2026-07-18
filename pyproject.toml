@@ -1,0 +1,64 @@
+# Apprentice — installable package. Two supported ways to run:
+#   1. git clone + venv (the repo checkout — data lives in the repo, as documented)
+#   2. pip/pipx install (this file) — data lives in APPRENTICE_HOME or ~/.apprentice,
+#      set up by `apprentice init`. The repo's src/ ships as the `apprentice` package,
+#      with config/qwen.json bundled as the seed default.
+#
+# Install straight from GitHub (no PyPI needed):
+#   pipx install git+https://github.com/m-555/Apprentice.git
+#   apprentice init
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "apprentice-pipeline"
+version = "0.2.0"
+description = "Local, multi-provider code-delegation pipeline: an MCP server that lets an orchestrator LLM delegate routine coding to cheap local/cloud worker models, mechanically verify the output, and learn from corrections."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "Mohsen Mirzaei" }]
+keywords = ["mcp", "llm", "agents", "code-generation", "ollama", "delegation"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Code Generators",
+]
+# Pinned deliberately (2026 MCP stdio advisory — never float the SDK).
+dependencies = [
+    "mcp==1.28.1",
+    "numpy==2.4.6",
+]
+
+[project.optional-dependencies]
+gemini = ["google-genai==2.11.0"]
+# NOTE: Aider (the `assign` agent) is deliberately NOT an extra — it must live in its
+# own venv so its large dependency tree can't collide with the pinned server deps.
+# See requirements-aider.txt.
+
+[project.scripts]
+apprentice = "apprentice.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/m-555/Apprentice"
+Changelog = "https://github.com/m-555/Apprentice/blob/main/CHANGELOG.md"
+
+[tool.hatch.build.targets.wheel]
+# Ship the repo's src/ directory as the `apprentice` package.
+packages = ["src"]
+
+[tool.hatch.build.targets.wheel.sources]
+"src" = "apprentice"
+
+[tool.hatch.build.targets.wheel.force-include]
+# Bundle the committed default config so `apprentice init` can seed a fresh data home.
+"config/qwen.json" = "apprentice/default_config/qwen.json"
+"config/qwen.local.example.json" = "apprentice/default_config/qwen.local.example.json"
+
+[tool.hatch.build.targets.sdist]
+include = ["src/**", "config/qwen.json", "config/qwen.local.example.json",
+           "README.md", "CHANGELOG.md", "LICENSE", "pyproject.toml"]

@@ -26,6 +26,8 @@ import host_verify   # noqa: E402
 import agent          # noqa: E402
 import deliver        # noqa: E402
 import providers      # noqa: E402
+import paths          # noqa: E402
+import cli            # noqa: E402
 
 _CFG = json.loads((Path(__file__).resolve().parent.parent / "config" / "qwen.json")
                   .read_text(encoding="utf-8"))
@@ -519,6 +521,29 @@ def test_apply_test_no_escalation_when_disabled():
     finally:
         server._CFG = old_cfg
         server.PROVIDERS["gemini"] = old_gem
+
+
+# --- packaging: data-home resolution + CLI ----------------------------------
+def test_paths_checkout_mode():
+    # Running from the repo checkout → data home is the repo root, config exists.
+    repo_root = Path(__file__).resolve().parent.parent
+    assert paths.ROOT == repo_root
+    assert paths.CONFIG_PATH == repo_root / "config" / "qwen.json"
+    assert paths.CONFIG_PATH.exists()
+    cfg = paths.load_config()
+    assert cfg.get("providers", {}).get("default") == "qwen"
+
+
+def test_cli_init_seeds_home_and_report_runs():
+    home = Path(tempfile.mkdtemp())
+    rc = cli.cmd_init(home=home, check_ollama=False)   # offline
+    assert rc == 0
+    for sub in ("config", "corrections", "outputs", "metrics"):
+        assert (home / sub).is_dir()
+    assert (home / "config" / "qwen.local.json").exists()  # starter overlay created
+    assert cli.cmd_report(5) == 0
+    assert cli.main(["help"]) == 0
+    assert cli.main(["bogus-command"]) == 2
 
 
 def test_repo_conventions_loaded():

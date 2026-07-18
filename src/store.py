@@ -18,8 +18,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_ROOT = Path(__file__).resolve().parent.parent
-_STORE_PATH = _ROOT / "outputs" / "store.jsonl"
+try:
+    from . import paths
+except ImportError:
+    import paths
+
+_STORE_PATH = paths.STORE_PATH
 
 
 def new_id() -> str:

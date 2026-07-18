@@ -75,6 +75,28 @@ Ollama can serve a model — scale the worker model to your hardware.
 
 ## Getting started
 
+### Option A — install as a package (quickest)
+
+```bash
+pipx install git+https://github.com/m-555/Apprentice.git   # or: pip install apprentice-pipeline
+apprentice init      # creates the data home (~/.apprentice or $APPRENTICE_HOME),
+                     # seeds the config, checks Ollama, prints the MCP registration cmd
+apprentice doctor    # environment check any time
+
+# pull the worker + embedder models (scale the worker to your hardware)
+ollama pull qwen3-coder-next
+ollama pull nomic-embed-text
+
+# register with your orchestrator (Claude Code example; `init` prints this too)
+claude mcp add --scope local qwen -- apprentice serve
+```
+
+Config and data live in `~/.apprentice` (override with `APPRENTICE_HOME`). Edit
+`~/.apprentice/config/qwen.local.json` for machine-local values and secrets. The Gemini
+provider is an extra: `pipx install 'apprentice-pipeline[gemini] @ git+https://github.com/m-555/Apprentice.git'`.
+
+### Option B — clone the repo (for hacking on the pipeline itself)
+
 ```bash
 git clone https://github.com/m-555/Apprentice.git qwen-pipeline
 cd qwen-pipeline
@@ -97,8 +119,9 @@ claude mcp add --scope local qwen -- ".venv/Scripts/python.exe" "src/server.py"
 claude mcp list      # -> qwen ... ✓ Connected
 ```
 
-Configuration lives in `config/` — see **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)**. To add
-the Gemini worker, see [Enabling Gemini](#enabling-gemini-vertex-ai) below.
+In a checkout, config and data live in the repo (`config/`, `corrections/`, `outputs/`,
+`metrics/`) — see **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)**. To add the Gemini worker,
+see [Enabling Gemini](#enabling-gemini-vertex-ai) below.
 
 ---
 
@@ -170,6 +193,11 @@ delegate(task="Add mul(a,b)…", role="py_implementer",
 A **file-aware worker agent** (Aider) that reads `repo` itself and grinds a whole task to an
 **objective "done"** with no orchestrator in the loop. The boss's role = **define task + define
 done + commit**.
+
+> **When to use which:** for a *known target file*, prefer `delegate` in token-cheap mode
+> (`context_files` + `apply_to` + `test_cmd`) — it's simpler, faster, and needs no Aider install.
+> Reach for `assign` when the task is genuinely **exploratory or multi-file** ("find where X is
+> handled and fix it") — that's what the repo-map agent is for.
 
 - Runs Aider (isolated venv, pinned) in a **disposable git worktree** off `repo`'s HEAD — the real
   tree is untouched. Loops: worker edits → run `done_when` (a shell cmd that must exit 0) → on

@@ -6,6 +6,19 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added — packaging: `pipx install` + `apprentice` CLI
+- **Installable package** (`pyproject.toml`, hatchling): `pipx install
+  git+https://github.com/m-555/Apprentice.git` (or `pip install apprentice-pipeline` once on
+  PyPI). The repo's `src/` ships as the `apprentice` package; deps stay pinned; the Gemini
+  provider is the `[gemini]` extra; Aider deliberately stays a separate venv, not an extra.
+- **`apprentice` CLI**: `init` (idempotent setup wizard — creates the data home, seeds the
+  default config bundled in the wheel, checks Ollama, prints the MCP registration command),
+  `serve` (the stdio server — `claude mcp add … -- apprentice serve`), `doctor` (environment
+  checks), `report`, `reindex`.
+- **Data-home resolution** (`src/paths.py`): a repo checkout keeps everything in the repo as
+  before; an installed package uses `$APPRENTICE_HOME` or `~/.apprentice`. All modules run
+  both as the `apprentice` package and flat from `src/` (checkout scripts unchanged).
+
 ### Added — wave 2: general-purpose providers, cost control, token-cheap delegate
 - **Config-driven provider registry.** Any `providers.<name>` entry with a known `kind` is a
   valid `provider=` value — no code changes: `ollama-local` (any local Ollama model),

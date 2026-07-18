@@ -27,47 +27,21 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from roles import ROLES, role_names
-from providers import PROVIDERS, provider_names, resolve as resolve_provider
-import retrieval
-import gate
-import metering
-import store
-import agent
-import deliver
+try:  # imported as the installed `apprentice` package
+    from .roles import ROLES, role_names
+    from .providers import PROVIDERS, provider_names, resolve as resolve_provider
+    from . import paths, retrieval, gate, metering, store, agent, deliver
+except ImportError:  # running flat from a repo checkout (python src/server.py)
+    from roles import ROLES, role_names
+    from providers import PROVIDERS, provider_names, resolve as resolve_provider
+    import paths, retrieval, gate, metering, store, agent, deliver
 
-# --- paths (relative to this file: src/ -> repo root) -----------------------
-_ROOT = Path(__file__).resolve().parent.parent
-_CONFIG_PATH = _ROOT / "config" / "qwen.json"
-# Optional gitignored overlay for machine-local, secret, or per-user values (real GCP
-# project, credentials file path, exact model ids, enabled flags). Deep-merged OVER
-# qwen.json so the committed config stays free of secrets. Ship qwen.local.example.json.
-_LOCAL_CONFIG_PATH = _ROOT / "config" / "qwen.local.json"
-_CORRECTIONS_PATH = _ROOT / "corrections" / "corrections.jsonl"
+# Data locations come from paths.py (repo root in a checkout; APPRENTICE_HOME /
+# ~/.apprentice when installed via pip/pipx). Kept as module attrs for tests.
+_CORRECTIONS_PATH = paths.CORRECTIONS_PATH
 
-
-def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
-    """Recursively merge `overlay` into `base` (overlay wins on scalars; dicts merge)."""
-    out = dict(base)
-    for key, val in overlay.items():
-        if isinstance(val, dict) and isinstance(out.get(key), dict):
-            out[key] = _deep_merge(out[key], val)
-        else:
-            out[key] = val
-    return out
-
-
-def _load_config() -> dict[str, Any]:
-    try:
-        cfg = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
-        cfg = {}
-    if _LOCAL_CONFIG_PATH.exists():
-        try:
-            cfg = _deep_merge(cfg, json.loads(_LOCAL_CONFIG_PATH.read_text(encoding="utf-8")))
-        except (json.JSONDecodeError, OSError):
-            pass
-    return cfg
+_deep_merge = paths.deep_merge
+_load_config = paths.load_config
 
 
 _CFG = _load_config()
@@ -695,7 +669,7 @@ def assign(task: str, done_when: str, repo: str, provider: str = "",
     result = agent.run_agent_task(
         task=task, done_when=done_when, repo=repo, provider=eff_provider,
         files=file_list, max_iters=max_iters, agent_cfg=agent_cfg,
-        outputs_dir=_ROOT / "outputs", apply=apply, model=model,
+        outputs_dir=paths.OUTPUTS_DIR, apply=apply, model=model,
     )
     metering.record({
         "tier": eff_provider,

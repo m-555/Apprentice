@@ -23,8 +23,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-_ROOT = Path(__file__).resolve().parent.parent
-_METRICS_PATH = _ROOT / "metrics" / "metrics.jsonl"
+try:
+    from . import paths
+except ImportError:
+    import paths
+
+_METRICS_PATH = paths.METRICS_PATH
 
 
 def task_ref(task: str) -> dict[str, str]:

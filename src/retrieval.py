@@ -19,9 +19,13 @@ from typing import Any
 
 import numpy as np
 
-_ROOT = Path(__file__).resolve().parent.parent
-_INDEX_PATH = _ROOT / "corrections" / "index.jsonl"
-_CORRECTIONS_PATH = _ROOT / "corrections" / "corrections.jsonl"
+try:
+    from . import paths
+except ImportError:
+    import paths
+
+_INDEX_PATH = paths.INDEX_PATH
+_CORRECTIONS_PATH = paths.CORRECTIONS_PATH
 
 
 def _embedding_model(cfg: dict[str, Any]) -> str:
@@ -166,7 +170,7 @@ def reindex(cfg: dict[str, Any]) -> int:
 if __name__ == "__main__":
     import sys
 
-    cfg = json.loads((_ROOT / "config" / "qwen.json").read_text(encoding="utf-8"))
+    cfg = paths.load_config()
     if len(sys.argv) > 1 and sys.argv[1] == "reindex":
         print(f"reindexed {reindex(cfg)} record(s) -> {_INDEX_PATH}")
     else:

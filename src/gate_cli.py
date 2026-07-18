@@ -10,12 +10,15 @@ Usage:  python src/gate_cli.py <role> <file>
 
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import gate  # noqa: E402
+try:
+    from . import gate, paths
+except ImportError:
+    import gate  # noqa: E402
+    import paths  # noqa: E402
 
 
 def main(argv: list[str]) -> int:
@@ -23,8 +26,7 @@ def main(argv: list[str]) -> int:
         print("usage: gate_cli.py <role> <file>")
         return 2
     role, fpath = argv[0], argv[1]
-    cfg = json.loads((Path(__file__).resolve().parent.parent / "config" / "qwen.json")
-                     .read_text(encoding="utf-8"))
+    cfg = paths.load_config()
     code = Path(fpath).read_text(encoding="utf-8")
     result = gate.run_gate(f"```\n{code}\n```", role, cfg)  # role selects the language
     print(f"gate: {result.status} ({result.check})")
