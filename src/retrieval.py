@@ -117,7 +117,10 @@ def retrieve(task: str, provider: str, role: str, cfg: dict[str, Any]) -> list[d
     n_mis = round(k * mix)
     chosen = mistakes[:n_mis] + corrects[: k - n_mis]
     if len(chosen) < k:  # backfill if a bucket was short
-        rest = [e for e in cand if e not in chosen]
+        # Compare by identity, not dict equality: two distinct records with identical
+        # content must not dedupe each other (and `in` on dicts is O(n^2) as it grows).
+        chosen_ids = {id(e) for e in chosen}
+        rest = [e for e in cand if id(e) not in chosen_ids]
         chosen += rest[: k - len(chosen)]
     chosen.sort(key=lambda e: e["_sim"], reverse=True)
     return chosen[:k]

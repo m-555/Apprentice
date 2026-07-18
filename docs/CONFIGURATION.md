@@ -21,13 +21,71 @@ cp config/qwen.local.example.json config/qwen.local.json
 
 ## Providers
 
-Two worker "brains" Claude delegates to (Claude itself is the boss/judge, not a provider):
+The worker "brains" the orchestrator delegates to (the orchestrator itself is the boss/judge,
+not a provider). Three built-ins:
 
 | Provider | Runtime | Notes |
 |----------|---------|-------|
 | `qwen`   | local Ollama | Default. Free, GPU-local. |
 | `gemini` | Vertex AI | Two tiers, `flash` (routine) / `pro` (hard), picked per call via the `model` arg. |
-| `openai` | — | Future slot, no key. |
+| `openai` | OpenAI API | GPT/Codex — set `model`, export `OPENAI_API_KEY`, set `enabled: true`. |
+
+### Adding your own provider (no code)
+
+Any entry under `providers.<name>` with a known `kind` becomes a valid `provider` value for
+`delegate`. Kinds:
+
+- **`openai-compatible`** — any OpenAI-style `/chat/completions` endpoint: OpenAI, **Groq,
+  OpenRouter, Mistral, LM Studio, vLLM, llama.cpp server**… Configure `base_url`, `model`
+  (or a `models` tier map + `default_model`), and `api_key_env` (the **name of the env var**
+  holding the key — keys never go in config files; local endpoints can omit the key entirely).
+- **`ollama-local`** — another local Ollama model (`host`, `model`, `keep_alive`, `options`).
+- **`vertex-ai`** — a second Vertex entry, same shape as `gemini`.
+
+Example (`config/qwen.local.json`):
+
+```json
+{
+  "providers": {
+    "groq": {
+      "enabled": true,
+      "kind": "openai-compatible",
+      "base_url": "https://api.groq.com/openai/v1",
+      "api_key_env": "GROQ_API_KEY",
+      "model": "llama-3.3-70b-versatile",
+      "options": { "temperature": 0.2 }
+    },
+    "lmstudio": {
+      "enabled": true,
+      "kind": "openai-compatible",
+      "base_url": "http://127.0.0.1:1234/v1",
+      "model": "qwen2.5-coder-14b-instruct"
+    }
+  }
+}
+```
+
+Then just `delegate(..., provider="groq")`. Every provider goes through the **same** mechanical
+gate, retries, retrieval, metering, and budgets.
+
+### Sampling options (code quality lever)
+
+`providers.<name>.options` is forwarded to the provider per request (`temperature`, `top_p`,
+plus `max_tokens` for openai-compatible / `max_output_tokens` for Vertex). The defaults are
+LOW temperature (0.15–0.2) on purpose: implement-to-spec codegen wants deterministic output —
+fewer gate failures and retry churn. Raise it only for exploratory/creative tasks.
+
+### Cost tracking & budgets (cloud spend)
+
+Local models are free; cloud tokens are not. Two knobs:
+
+- **Prices** — `providers.<name>.cost`, either flat (`{"usd_per_mtok_in": …, "usd_per_mtok_out": …}`)
+  or keyed by model tier (`{"flash": {…}, "pro": {…}}`). When set, every metering event gets an
+  `est_cost_usd` and `python src/metering.py` reports per-tier and total estimated spend.
+- **Budgets** — `metering.budgets.<name>_tokens_per_day` and/or `<name>_usd_per_day`
+  (since UTC midnight). These are **enforced**: `delegate`/`assign` refuse an over-budget
+  provider with a clear error (route to the local model instead), and the cascade skips
+  escalating to an over-budget tier.
 
 ### Enabling the Gemini (Vertex AI) worker
 
@@ -88,20 +146,13 @@ for the Aider subprocess from `providers.gemini`, so credentials are configured 
 Empty `model` → the provider's `default_model` (`flash`). See [MULTI_AGENT.md](MULTI_AGENT.md) for
 when to reach for each brain/tier.
 
-### Writing `done_when` commands (Windows note)
+### Writing `done_when` / `test_cmd` commands (Windows note)
 
-`assign`'s `done_when` runs via `cmd /c`, which mangles **any quoted multi-word argument**. Two
-forms that bite:
-- A **quoted executable path**: `"C:/…/python.exe" check.py` → `'"C:/…/python.exe"' is not recognized`.
-- A **quoted multi-word search string**: `findstr /C:"export function foo" file.ts` → cmd splits it and
-  findstr reports `FINDSTR: Cannot open function` (it treats the words as filenames), so `done_when`
-  always fails and nothing applies.
-
-Guidance: avoid quoted multi-word args. Use an unquoted path with **no spaces** (backslashes:
-`C:\path\to\.venv\Scripts\python.exe check.py`) and a **single-token** search
-(`findstr foo file.ts`). If you truly need spaces/quotes, wrap the whole command in a `.bat`/`.cmd`
-and call that as `done_when`. A silent `done_when` failure looks like "the worker did nothing" —
-but the real tree is never touched (apply is gated on `done_passed`), so it's safe, just confusing.
+Both `assign`'s `done_when` and `delegate`'s `test_cmd` are executed via a **generated `.cmd`
+script**, not `cmd /c <string>`, so quoted multi-word arguments (quoted exe paths,
+`findstr /C:"export function foo"`) survive intact — no special quoting rules to remember.
+The command runs with the worktree (`done_when`) or repo (`test_cmd`) as its working directory
+and must **exit 0** to count as passing.
 
 ## Other config blocks (in `config/qwen.json`)
 
@@ -110,16 +161,25 @@ but the real tree is never touched (apply is gated on `done_passed`), so it's sa
 | `runner` / `worker_model` / `keep_alive` / `offload` | Ollama host, the local model tag, warm-keep window, expert-offload notes. |
 | `retrieval` | In-context few-shot retrieval of past corrections (`top_k`, `role_filter`, mix). |
 | `gate` | Per-language mechanical gate (Python `py_compile`, TS `tsc`, C++ heuristic lint) + `max_retries`. |
+| `delegate` | Token-cheap delegate options: `context_max_file_kb`/`context_max_total_kb` (server-side `context_files` caps), `test_timeout_s` (the `apply_to`+`test_cmd` acceptance run), `return_mode` default. |
 | `cascade` | Cost-ordered auto-escalation on persistent gate failure (`escalate_to`, `skip_cascade_categories`). |
-| `metering` | Per-delegation cost/outcome log + optional per-provider daily token `budgets`. |
+| `metering` | Per-delegation cost/outcome log, `est_cost_usd` pricing, and **enforced** daily `budgets` (tokens and/or USD per provider). |
 | `agent` | The `assign` file-aware agent: Aider exe path, worktree root, iteration/timeout caps, model map. |
 | `host_harness` | Batched Tier-2 C++/UE build+test runner (project-specific; used by `host_verify.py`). |
 
-## Per-repo overrides (for `assign` on other projects)
+## Per-repo config (`<repo>/.qwen-pipeline.json`)
 
-`assign` is project-agnostic. Drop a `<repo>/.qwen-pipeline.json` in any target repo; its `agent`
-block merges over `config/qwen.json → agent` (repo wins). Example:
+The pipeline is project-agnostic; drop a `.qwen-pipeline.json` in any target repo:
+
+- **`conventions`** *(string)* — injected into the worker's system prompt for every
+  `delegate(repo=…)` call on that repo. Put your project's style rules here (naming, typing,
+  frameworks) so style corrections stop happening after the fact. It's stable per repo, so it
+  stays prompt-cache-friendly.
+- **`agent`** *(object)* — merges over `config/qwen.json → agent` (repo wins) for `assign`.
 
 ```json
-{ "agent": { "max_iters": 4, "diff_excludes": [".aider*", "node_modules", "dist", "*.pyc"] } }
+{
+  "conventions": "TypeScript strict; no `any`. Zod for validation. snake_case file names.",
+  "agent": { "max_iters": 4, "diff_excludes": [".aider*", "node_modules", "dist", "*.pyc"] }
+}
 ```

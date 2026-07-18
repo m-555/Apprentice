@@ -47,11 +47,16 @@
     "note": "Cold load is a one-time cost per model load; keep_alive keeps it warm. Warm throughput ~50-58 tok/s on small generations."
   },
   "providers": {
-    "_comment": "Workers Claude can delegate to via the generic delegate(provider, role, task) MCP tool. Add a provider here + a handler in src/providers.py.",
+    "_comment": "Workers the orchestrator can delegate to via delegate(provider=...). Built-ins: qwen/gemini/openai. ADD YOUR OWN WITHOUT CODE: any entry here with a known `kind` becomes a valid provider name — kinds: ollama-local (local Ollama), openai-compatible (OpenAI, Groq, OpenRouter, Mistral, LM Studio, vLLM, llama.cpp server — set base_url/model/api_key_env), vertex-ai (Google Vertex). API keys NEVER go in config: name the env var in api_key_env. Optional per-provider `cost` (usd_per_mtok_in/out, flat or per model-tier) powers $ metering + usd budgets.",
     "default": "qwen",
     "qwen": {
       "enabled": true,
       "kind": "ollama-local",
+      "options": {
+        "_note": "Passed per-request to Ollama (keys starting with _ are stripped). LOW temperature is deliberate: implement-to-spec codegen wants determinism — fewer gate failures/retries. Do NOT add num_ctx here casually (KV cache grows with context; see offload.vram_tight_policy).",
+        "temperature": 0.15,
+        "top_p": 0.9
+      },
       "_note": "Uses runner.host + worker_model.tag + keep_alive.value above. Free, local, owns the GPU."
     },
     "gemini": {
@@ -66,15 +71,41 @@
         "flash": "",
         "pro": ""
       },
+      "options": {
+        "_note": "Forwarded to GenerateContentConfig (temperature/top_p/max_output_tokens only). Low temperature for deterministic implement-to-spec output.",
+        "temperature": 0.2
+      },
+      "cost": {
+        "_note": "Per model-tier prices in USD per MILLION tokens — set YOUR real Vertex prices in qwen.local.json (they change; 0 = unpriced, no $ metering). Powers est_cost_usd in metrics + the report, and metering.budgets.gemini_usd_per_day.",
+        "flash": {"usd_per_mtok_in": 0, "usd_per_mtok_out": 0},
+        "pro": {"usd_per_mtok_in": 0, "usd_per_mtok_out": 0}
+      },
       "timeout_s": 120,
       "_note": "Two-tier Vertex worker (used by the `delegate` tool via google-genai). DO NOT put secrets/project/model-ids here — this file is committed. Set project, credentials_file (your Vertex service-account JSON), models.flash/pro (bare Vertex ids, e.g. gemini-2.5-pro), and enabled=true in config/qwen.local.json (gitignored). Copy config/qwen.local.example.json. The delegate/assign `model` arg picks 'flash' (routine) or 'pro' (hard) per task; empty = default_model."
     },
     "openai": {
       "enabled": false,
-      "kind": "openai-api",
+      "kind": "openai-compatible",
+      "base_url": "https://api.openai.com/v1",
+      "api_key_env": "OPENAI_API_KEY",
       "model": "",
-      "_note": "Codex/GPT. No key yet - optional future slot. Set OPENAI_API_KEY + model, then enabled=true."
+      "models": {},
+      "default_model": "",
+      "timeout_s": 300,
+      "options": {
+        "_note": "Forwarded to /chat/completions (temperature/top_p/max_tokens).",
+        "temperature": 0.2
+      },
+      "cost": {},
+      "_note": "GPT/Codex via the OpenAI API. Set model (e.g. gpt-5.2-codex) — or a models tier map like gemini's — export OPENAI_API_KEY, then enabled=true in qwen.local.json. The same kind works for ANY OpenAI-compatible endpoint (Groq/OpenRouter/LM Studio/vLLM): copy this block under a new provider name and change base_url/api_key_env/model."
     }
+  },
+  "delegate": {
+    "_comment": "Wave-2 token-cheap delegate options. context_max_*: caps for server-side context_files fetch. test_timeout_s: cap for the apply_to+test_cmd acceptance run. return_mode: default when the caller doesn't pass one ('full' returns code; 'summary' returns only the status footer — the code is on disk + in the output store).",
+    "context_max_file_kb": 48,
+    "context_max_total_kb": 192,
+    "test_timeout_s": 300,
+    "return_mode": "full"
   },
   "retrieval": {
     "_comment": "Phase 5 in-context retrieval tunables.",
@@ -119,9 +150,11 @@
     "_comment": "§6.5 per-delegation cost/outcome log -> metrics/metrics.jsonl (local, git-ignored). Report: `python src/metering.py [N]`. Claude token counts aren't visible to the pipeline; the tracked signal is machine-verified %% up and Claude step-ins down.",
     "enabled": true,
     "budgets": {
-      "_note": "Optional per-tier ceilings (tokens_out). Absent/0 = no cap. Enforcement is advisory in §6.5; the §6.1 retry cap already bounds runaway loops.",
+      "_note": "Per-provider daily ceilings since UTC midnight, from metrics.jsonl. 0 = no cap. ENFORCED: delegate/assign refuse a provider that is over budget (clear error → route to a local/free provider instead), and the §6.4 cascade skips escalating to an over-budget tier. Two styles per provider: <name>_tokens_per_day (tokens_out) and <name>_usd_per_day (needs providers.<name>.cost prices). Set real values in qwen.local.json once cloud spend matters.",
       "gemini_tokens_per_day": 0,
-      "openai_tokens_per_day": 0
+      "gemini_usd_per_day": 0,
+      "openai_tokens_per_day": 0,
+      "openai_usd_per_day": 0
     }
   },
   "agent": {

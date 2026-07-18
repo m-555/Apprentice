@@ -2,6 +2,21 @@
   "_comment": "TEMPLATE. Copy this file to `config/qwen.local.json` (gitignored) and fill in real values. At load time the server DEEP-MERGES qwen.local.json OVER qwen.json, so put ALL secrets, your GCP project id, credential paths, exact model ids, and `enabled` flags here — never in the committed qwen.json. Delete keys you don't override.",
 
   "providers": {
+    "openai": {
+      "_note": "GPT/Codex. Export OPENAI_API_KEY (never put keys in config), set the model, flip enabled.",
+      "enabled": false,
+      "model": "gpt-5.2-codex",
+      "cost": {"usd_per_mtok_in": 0, "usd_per_mtok_out": 0}
+    },
+    "groq_example": {
+      "_note": "EXAMPLE of a config-only custom provider — any OpenAI-compatible endpoint works (Groq, OpenRouter, Mistral, LM Studio http://127.0.0.1:1234/v1, vLLM...). Rename freely; then delegate(provider=\"groq_example\").",
+      "enabled": false,
+      "kind": "openai-compatible",
+      "base_url": "https://api.groq.com/openai/v1",
+      "api_key_env": "GROQ_API_KEY",
+      "model": "llama-3.3-70b-versatile",
+      "options": {"temperature": 0.2}
+    },
     "gemini": {
       "enabled": true,
       "project": "your-gcp-project-id",
@@ -13,6 +28,11 @@
         "_note": "BARE Vertex model ids (google-genai SDK, used by the `delegate` tool). Examples below; use the exact ids your project can access.",
         "flash": "gemini-3.5-flash",
         "pro": "gemini-3.1-pro-preview"
+      },
+      "cost": {
+        "_note": "YOUR real Vertex prices in USD per MILLION tokens (check the current price page). Enables est_cost_usd metering + the usd_per_day budget below.",
+        "flash": {"usd_per_mtok_in": 0, "usd_per_mtok_out": 0},
+        "pro": {"usd_per_mtok_in": 0, "usd_per_mtok_out": 0}
       }
     }
   },
@@ -32,8 +52,10 @@
 
   "metering": {
     "budgets": {
-      "_note": "Optional daily ceilings so a runaway retry loop can't drain Vertex credits. 0 = no cap.",
-      "gemini_tokens_per_day": 2000000
+      "_note": "ENFORCED daily ceilings so a runaway retry loop can't drain cloud credits. 0 = no cap. Token caps always work; usd caps need the provider's `cost` prices set.",
+      "gemini_tokens_per_day": 2000000,
+      "gemini_usd_per_day": 5,
+      "openai_usd_per_day": 5
     }
   }
 }

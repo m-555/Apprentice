@@ -24,6 +24,8 @@ import server        # noqa: E402
 import retrieval     # noqa: E402
 import host_verify   # noqa: E402
 import agent          # noqa: E402
+import deliver        # noqa: E402
+import providers      # noqa: E402
 
 _CFG = json.loads((Path(__file__).resolve().parent.parent / "config" / "qwen.json")
                   .read_text(encoding="utf-8"))
@@ -224,7 +226,324 @@ def test_log_correction_diff_mode():
     assert rec["qwen_output"] == "def add(a, b):\n    return a - b\n"  # reconstructed, not re-sent
 
 
+# --- §6.4 cascade: escalation carries the failure history -------------------
+def test_cascade_escalation_carries_failure():
+    import copy
+    tmp = Path(tempfile.mkdtemp())
+    _isolate(tmp)
+    old_cfg, old_gem = server._CFG, server.PROVIDERS["gemini"]
+    cfg = copy.deepcopy(_CFG)
+    cfg["gate"]["max_retries"] = 0                    # fail fast on the first tier
+    cfg["providers"]["gemini"]["enabled"] = True
+    cfg["cascade"]["escalate_to"] = "gemini"
+    server._CFG = cfg
+    seen: dict = {}
+    server.PROVIDERS["qwen"] = (
+        lambda s, u, c, usage=None, model="": "```python\ndef f(:\n```")  # broken
+    def _gem(s, u, c, usage=None, model=""):
+        seen["user"] = u
+        return "```python\ndef f():\n    return 1\n```"
+    server.PROVIDERS["gemini"] = _gem
+    try:
+        out, result, attempts, tier = server._delegate_cascade(
+            "t", "py_implementer", "qwen", "sys", "the task")
+        assert tier == "gemini" and result.status == "pass"
+        # The escalated tier must see the failed attempt + verbatim checker error,
+        # not just the raw task.
+        assert "PREVIOUS OUTPUT" in seen["user"] and "CHECKER ERROR" in seen["user"]
+        assert "the task" in seen["user"]
+    finally:
+        server._CFG = old_cfg
+        server.PROVIDERS["gemini"] = old_gem
+
+
+# --- budgets: enforced, not advisory -----------------------------------------
+def test_budget_enforcement():
+    import copy
+    tmp = Path(tempfile.mkdtemp())
+    metering._METRICS_PATH = tmp / "metrics.jsonl"
+    old_cfg = server._CFG
+    cfg = copy.deepcopy(_CFG)
+    cfg["metering"]["budgets"]["gemini_tokens_per_day"] = 100
+    server._CFG = cfg
+    try:
+        assert server._budget_exceeded("gemini") == ""      # nothing spent yet
+        metering.record({"tier": "gemini", "tokens_out": 150}, cfg)
+        assert "budget" in server._budget_exceeded("gemini")  # over cap → refusal msg
+        assert server._budget_exceeded("qwen") == ""          # no cap configured
+    finally:
+        server._CFG = old_cfg
+
+
+# --- agent: done_when runs via a script (Windows quoting survives) ----------
+def test_done_script_wrapper():
+    wt = tempfile.mkdtemp()
+    script = agent._write_done_script(wt, "echo ok")
+    assert script.endswith(".qwen_done.cmd")
+    assert agent._excluded(".qwen_done.cmd", agent._DEFAULT_DIFF_EXCLUDES)
+    rc, out = agent._run(["cmd", "/c", script], cwd=wt, timeout=30)
+    assert rc == 0 and "ok" in out
+    # a quoted multi-word arg must survive intact inside the script file
+    script2 = agent._write_done_script(wt, 'findstr /C:"two words" missing.txt')
+    assert '/C:"two words"' in Path(script2).read_text(encoding="utf-8")
+
+
+# --- wave 2: config-driven provider registry ---------------------------------
+def test_provider_registry_config_driven():
+    cfg = {"providers": {
+        "groq": {"kind": "openai-compatible", "base_url": "https://api.groq.com/openai/v1"},
+        "mystery": {"kind": "quantum"},
+    }}
+    assert providers.resolve("qwen", cfg) is providers.PROVIDERS["qwen"]  # built-in wins
+    assert providers.resolve("groq", cfg) is not None      # config-defined, known kind
+    assert providers.resolve("mystery", cfg) is None       # unknown kind
+    assert providers.resolve("nope", cfg) is None
+    names = providers.provider_names(cfg)
+    assert "groq" in names and "qwen" in names and "mystery" not in names
+
+
+def test_resolve_model_tiers():
+    p = {"models": {"flash": "m-flash", "pro": "m-pro"}, "default_model": "flash"}
+    assert providers._resolve_model(p, "pro") == "m-pro"        # tier alias
+    assert providers._resolve_model(p, "raw-id") == "raw-id"    # passthrough
+    assert providers._resolve_model(p, "") == "m-flash"         # default tier
+    assert providers._resolve_model({"model": "single"}, "") == "single"
+    assert providers._resolve_model({}, "", "fallback") == "fallback"
+
+
+# --- wave 2: cost metering + usd budgets --------------------------------------
+def test_cost_estimation_and_usd_budget():
+    import copy
+    cfg = {"providers": {"gemini": {
+        "default_model": "flash",
+        "cost": {"flash": {"usd_per_mtok_in": 1.0, "usd_per_mtok_out": 4.0},
+                 "pro": {"usd_per_mtok_in": 10.0, "usd_per_mtok_out": 40.0}},
+    }, "flat": {"cost": {"usd_per_mtok_in": 2.0, "usd_per_mtok_out": 2.0}}}}
+    # per-tier pricing; "" model falls back to default_model
+    assert abs(metering.est_cost_usd(cfg, "gemini", "pro", 1_000_000, 0) - 10.0) < 1e-9
+    assert abs(metering.est_cost_usd(cfg, "gemini", "", 0, 1_000_000) - 4.0) < 1e-9
+    assert abs(metering.est_cost_usd(cfg, "flat", "", 500_000, 500_000) - 2.0) < 1e-9
+    assert metering.est_cost_usd(cfg, "qwen", "", 9e6, 9e6) == 0.0  # unpriced = free
+
+    # usd budget enforcement end-to-end through metering.record
+    tmp = Path(tempfile.mkdtemp())
+    metering._METRICS_PATH = tmp / "metrics.jsonl"
+    old = server._CFG
+    scfg = copy.deepcopy(_CFG)
+    scfg["providers"]["gemini"]["cost"] = {
+        "flash": {"usd_per_mtok_in": 1.0, "usd_per_mtok_out": 4.0}}
+    scfg["providers"]["gemini"]["default_model"] = "flash"
+    scfg["metering"]["budgets"]["gemini_usd_per_day"] = 0.5
+    scfg["metering"]["budgets"]["gemini_tokens_per_day"] = 0
+    server._CFG = scfg
+    try:
+        metering.record({"tier": "gemini", "model": "flash",
+                         "tokens_in": 100_000, "tokens_out": 200_000}, scfg)
+        # $0.1 in + $0.8 out = $0.90 spent >= the $0.50 daily cap → must refuse
+        assert "USD budget" in server._budget_exceeded("gemini")
+    finally:
+        server._CFG = old
+
+
+# --- wave 2: server-side context fetch + apply/test ---------------------------
+def test_deliver_path_guard_and_context():
+    repo = Path(tempfile.mkdtemp())
+    (repo / "src").mkdir()
+    (repo / "src" / "a.py").write_text("L1\nL2\nL3\nL4\nL5\n", encoding="utf-8")
+    # traversal must be refused
+    try:
+        deliver.resolve_repo_path(str(repo), "../evil.txt")
+        assert False, "traversal not refused"
+    except ValueError:
+        pass
+    ctx = deliver.read_context(str(repo), ["src/a.py:2-4"])
+    assert "L2" in ctx and "L4" in ctx and "L1" not in ctx and "L5" not in ctx
+    assert "lines 2-4" in ctx
+    # missing file is a clear error
+    try:
+        deliver.read_context(str(repo), ["src/missing.py"])
+        assert False
+    except ValueError:
+        pass
+
+
+def test_deliver_apply_modes_and_revert():
+    repo = Path(tempfile.mkdtemp())
+    f = repo / "m.py"
+    f.write_text("def a():\n    return 1\n", encoding="utf-8")
+    orig, path = deliver.apply_code(str(repo), "m.py", "def b():\n    return 2", "append")
+    text = f.read_text(encoding="utf-8")
+    assert "def a()" in text and "def b()" in text
+    deliver.revert_apply(path, orig)
+    assert f.read_text(encoding="utf-8") == "def a():\n    return 1\n"
+    # create: new file, revert deletes it
+    orig2, p2 = deliver.apply_code(str(repo), "new.py", "x = 1", "create")
+    assert orig2 is None and p2.exists()
+    deliver.revert_apply(p2, orig2)
+    assert not p2.exists()
+    # create on existing file must fail
+    try:
+        deliver.apply_code(str(repo), "m.py", "x", "create")
+        assert False
+    except ValueError:
+        pass
+
+
+def test_delegate_apply_and_test_loop():
+    """Full offline TDD loop: worker output fails the project test, gets reverted,
+    worker fixes from verbatim test output, re-applied, tests pass."""
+    import copy
+    tmp = Path(tempfile.mkdtemp())
+    _isolate(tmp)
+    repo = Path(tempfile.mkdtemp())
+    check = ("import pathlib, sys; "
+             "t = pathlib.Path('u.py').read_text(); "
+             "sys.exit(0 if 'return a + b' in t else 1)")
+    test_cmd = f'"{sys.executable}" -c "{check}"'
+
+    old_cfg = server._CFG
+    server._CFG = copy.deepcopy(_CFG)
+    seq = iter(["```python\ndef add(a, b):\n    return a + b\n```"])  # the fix
+    server.PROVIDERS["qwen"] = lambda s, u, c, usage=None, model="": next(seq)
+    try:
+        out, info = server._apply_and_test(
+            task="add", role="py_implementer", tier="qwen", system="s",
+            user="u", output="```python\ndef add(a, b):\n    return a - b\n```",
+            repo=str(repo), apply_to="u.py", apply_mode="create", test_cmd=test_cmd)
+        assert info["test_status"] == "pass", info
+        assert info["applied"] and info["attempts"] == 2
+        assert "return a + b" in (repo / "u.py").read_text(encoding="utf-8")
+        # the worker-retry fix was logged as a machine-verified correction
+        recs = [json.loads(l) for l
+                in (tmp / "corrections.jsonl").read_text().splitlines()]
+        assert any(r["corrected_by"] == "worker_retry"
+                   and "acceptance command" in r["explanation"] for r in recs)
+    finally:
+        server._CFG = old_cfg
+
+
+def test_delegate_test_fail_reverts():
+    """If the worker never satisfies test_cmd, the file must be reverted (tree clean)."""
+    import copy
+    tmp = Path(tempfile.mkdtemp())
+    _isolate(tmp)
+    repo = Path(tempfile.mkdtemp())
+    test_cmd = f'"{sys.executable}" -c "import sys; sys.exit(1)"'  # always red
+    old_cfg = server._CFG
+    server._CFG = copy.deepcopy(_CFG)
+    server._CFG["gate"]["max_retries"] = 1
+    server.PROVIDERS["qwen"] = (
+        lambda s, u, c, usage=None, model="": "```python\nx = 2\n```")
+    try:
+        out, info = server._apply_and_test(
+            task="t", role="py_implementer", tier="qwen", system="s", user="u",
+            output="```python\nx = 1\n```", repo=str(repo), apply_to="v.py",
+            apply_mode="create", test_cmd=test_cmd)
+        assert info["test_status"] == "fail"
+        assert not info["applied"]
+        assert not (repo / "v.py").exists()  # reverted (created file deleted)
+    finally:
+        server._CFG = old_cfg
+
+
+def test_apply_test_escalates_to_stronger_tier():
+    """qwen never satisfies test_cmd → the loop escalates to gemini carrying the
+    failing code + verbatim test output; gemini's fix passes and is left applied."""
+    import copy
+    tmp = Path(tempfile.mkdtemp())
+    _isolate(tmp)
+    repo = Path(tempfile.mkdtemp())
+    check = ("import pathlib, sys; "
+             "t = pathlib.Path('w.py').read_text(); "
+             "sys.exit(0 if 'return a + b' in t else 1)")
+    test_cmd = f'"{sys.executable}" -c "{check}"'
+
+    old_cfg, old_gem = server._CFG, server.PROVIDERS["gemini"]
+    cfg = copy.deepcopy(_CFG)
+    cfg["gate"]["max_retries"] = 1
+    cfg["providers"]["gemini"]["enabled"] = True
+    cfg["cascade"]["escalate_to"] = "gemini"
+    server._CFG = cfg
+    server.PROVIDERS["qwen"] = (  # qwen keeps producing the wrong operator
+        lambda s, u, c, usage=None, model="": "```python\ndef add(a, b):\n    return a - b\n```")
+    seen: dict = {}
+    def _gem(s, u, c, usage=None, model=""):
+        seen["user"] = u
+        return "```python\ndef add(a, b):\n    return a + b\n```"
+    server.PROVIDERS["gemini"] = _gem
+    try:
+        out, info = server._apply_and_test(
+            task="add", role="py_implementer", tier="qwen", system="s", user="u",
+            output="```python\ndef add(a, b):\n    return a - b\n```",
+            repo=str(repo), apply_to="w.py", apply_mode="create", test_cmd=test_cmd)
+        assert info["test_status"] == "pass" and info["tier"] == "gemini", info
+        assert "return a + b" in (repo / "w.py").read_text(encoding="utf-8")
+        # gemini got the failing attempt + the verbatim test failure, not a cold task
+        assert "PREVIOUS OUTPUT" in seen["user"] and "FAILED" in seen["user"]
+        recs = [json.loads(l) for l
+                in (tmp / "corrections.jsonl").read_text().splitlines()]
+        assert any(r["provider"] == "gemini" and r["corrected_by"] == "worker_retry"
+                   for r in recs)
+    finally:
+        server._CFG = old_cfg
+        server.PROVIDERS["gemini"] = old_gem
+
+
+def test_apply_test_no_escalation_when_disabled():
+    """With the escalation tier disabled (the default), a persistent test failure must
+    NOT call it — fail cleanly, file reverted."""
+    import copy
+    tmp = Path(tempfile.mkdtemp())
+    _isolate(tmp)
+    repo = Path(tempfile.mkdtemp())
+    test_cmd = f'"{sys.executable}" -c "import sys; sys.exit(1)"'  # always red
+    old_cfg, old_gem = server._CFG, server.PROVIDERS["gemini"]
+    cfg = copy.deepcopy(_CFG)
+    cfg["gate"]["max_retries"] = 1
+    cfg["providers"]["gemini"]["enabled"] = False   # explicit: not available
+    server._CFG = cfg
+    server.PROVIDERS["qwen"] = (
+        lambda s, u, c, usage=None, model="": "```python\nx = 1\n```")
+    called = {"gemini": False}
+    def _gem(s, u, c, usage=None, model=""):
+        called["gemini"] = True
+        return "```python\nx = 2\n```"
+    server.PROVIDERS["gemini"] = _gem
+    try:
+        out, info = server._apply_and_test(
+            task="t", role="py_implementer", tier="qwen", system="s", user="u",
+            output="```python\nx = 0\n```", repo=str(repo), apply_to="z.py",
+            apply_mode="create", test_cmd=test_cmd)
+        assert info["test_status"] == "fail" and not called["gemini"]
+        assert not (repo / "z.py").exists()  # reverted
+    finally:
+        server._CFG = old_cfg
+        server.PROVIDERS["gemini"] = old_gem
+
+
+def test_repo_conventions_loaded():
+    repo = Path(tempfile.mkdtemp())
+    (repo / ".qwen-pipeline.json").write_text(
+        json.dumps({"conventions": "Use snake_case.", "agent": {"max_iters": 2}}),
+        encoding="utf-8")
+    opts = deliver.load_repo_options(str(repo))
+    assert opts.get("conventions") == "Use snake_case."
+    assert deliver.load_repo_options(str(Path(tempfile.mkdtemp()))) == {}
+
+
 # --- §6.5 metering report ---------------------------------------------------
+def test_metering_stepin_vs_acceptance():
+    tmp = Path(tempfile.mkdtemp())
+    metering._METRICS_PATH = tmp / "metrics.jsonl"
+    # an acceptance (log-ALWAYS discipline) and a real correction
+    metering.record({"tier": "claude", "stepped_in": False,
+                     "error_category": "none"}, _CFG)
+    metering.record({"tier": "claude", "stepped_in": True,
+                     "error_category": "logic"}, _CFG)
+    rep = metering.report(10)
+    assert "step in: 1 of 2" in rep  # acceptance is a review, NOT a step-in
+
+
 def test_metering_report():
     tmp = Path(tempfile.mkdtemp())
     metering._METRICS_PATH = tmp / "metrics.jsonl"

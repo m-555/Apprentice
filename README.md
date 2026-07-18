@@ -1,10 +1,16 @@
 # Apprentice
 
 **A local, multi-provider code-delegation pipeline.** A master orchestrator (e.g. Claude Code)
-delegates routine coding to *apprentice* models — a **local Qwen 80B** on your own GPU (via
-Ollama) and **Gemini** (Vertex AI) — then mechanically verifies, corrects, and *learns* from the
+delegates routine coding to *apprentice* models — a **local model on your own GPU** (via Ollama),
+**Gemini** (Vertex AI), **GPT/Codex** (OpenAI), or **any OpenAI-compatible endpoint** (Groq,
+OpenRouter, LM Studio, vLLM, …) — then mechanically verifies, corrects, and *learns* from the
 results over time via in-context retrieval. The expensive brain is spent on judgment; the cheap
 brains do the typing.
+
+The economics in one line: **local apprentices are free but weaker; cloud apprentices are
+stronger but metered** — so the pipeline verifies everything mechanically (compile → lint →
+your project's own tests), starts cheap, escalates only on failure, prices every cloud call,
+and enforces daily budgets.
 
 The apprentices sit behind one small **MCP server** exposing three tools — `delegate`, `assign`,
 `log_correction` — so any MCP-capable orchestrator can drive them.
@@ -39,10 +45,17 @@ orchestrator reviews the output.
         │   log_correction(…)                            │
         └───┬───────────────┬───────────────┬────────────┘
             ▼               ▼               ▼
-         qwen            gemini          openai
-      (Ollama,        (Vertex AI:      (future,
-       local GPU)      flash / pro)     no key)
+         qwen            gemini        openai + any
+      (Ollama,        (Vertex AI:    openai-compatible
+       local GPU,      flash / pro,   endpoint (GPT/Codex,
+       FREE)           metered $)     Groq, LM Studio, …)
 ```
+
+**Providers are config, not code.** Any entry in `config providers.<name>` with a known `kind`
+(`ollama-local`, `openai-compatible`, `vertex-ai`) becomes a valid `provider=` value — adding
+Groq or a second local model is a 6-line JSON block. See
+[docs/CONFIGURATION.md](docs/CONFIGURATION.md#adding-your-own-provider-no-code). Every provider
+runs through the same gate, retries, retrieval, metering, and budgets.
 
 The "specialized agents" (test writer, C++ implementer, …) are **not** separate models — they are
 `role` values that select a different system prompt for the same worker.
@@ -115,14 +128,43 @@ throughput ≈ 50–58 tok/s; cold load ≈ 55 s.
 
 ## The MCP tools
 
-### `delegate(task, role, provider="", context="", model="")  ->  str`
-Sends `{system: ROLES[role], user: task (+context)}` to the chosen provider and returns the
-generated text, plus a status footer with the gate verdict and an `output_id`. The pipeline
-mechanically verifies the output and auto-retries the worker on failure *before* returning.
+### `delegate(task, role, provider="", context="", model="", repo="", context_files="", apply_to="", apply_mode="append", test_cmd="", return_mode="")  ->  str`
+Sends `{system: ROLES[role] (+ repo conventions), user: task (+context)}` to the chosen provider
+and returns the generated text, plus a status footer with the gate verdict and an `output_id`.
+The pipeline mechanically verifies the output and auto-retries the worker on failure *before*
+returning.
 
 - **roles:** `ts_implementer`, `cpp_implementer`, `py_implementer`, `test_writer`, `refactorer`
-- **providers:** `qwen` (local, default), `gemini` (Vertex AI), `openai` (future)
+- **providers:** `qwen` (local, default), `gemini` (Vertex AI), `openai` (GPT/Codex), or any
+  config-defined provider
 - **model:** optional per-call override — for `gemini`, `"flash"` (routine) or `"pro"` (hard).
+
+**Token-cheap mode** — the orchestrator's expensive output tokens should never carry code:
+
+- `repo=` + `context_files="src/a.ts src/b.ts:20-80"` — send **paths, not code**; the server
+  reads the content locally (size-capped, path-traversal-guarded) and builds the context block.
+- `apply_to="src/a.ts"` (+ `apply_mode`: `append`|`create`|`overwrite`) — the server writes the
+  gate-passed code **into the real file** itself.
+- `test_cmd="npx vitest run …"` — after applying, the server runs **your project's own
+  acceptance command** in `repo`; on red it *reverts the file*, bounces the verbatim test output
+  back to the worker, and retries — a full TDD loop with zero orchestrator tokens. The tree is
+  never left broken. If the tier keeps failing, the task **escalates through the cascade**
+  (e.g. local → gemini) carrying the failing code + test output, budget-guarded, before it ever
+  reaches the orchestrator (footer shows `test_tier=` when that happened).
+- `return_mode="summary"` — receive only the status footer + a one-line preview instead of the
+  full code (it's already in the file and the output store).
+
+A routine function then costs the orchestrator roughly: *task spec in, two-line footer out.*
+
+```
+delegate(task="Add mul(a,b)…", role="py_implementer",
+         repo="/path/to/proj", context_files="mathx.py",
+         apply_to="mathx.py", test_cmd="python test_mathx.py",
+         return_mode="summary")
+→ [summary] code_lines=3 first_line='def mul(a: float, b: float) -> float:'
+  [qwen-pipeline] machine_verified=true check=py_compile attempts=1 tier=qwen
+  output_id=… applied=true apply_to=mathx.py test=pass test_attempts=1
+```
 
 ### `assign(task, done_when, repo, provider="", files="", max_iters=0, apply=True, model="")  ->  dict`
 A **file-aware worker agent** (Aider) that reads `repo` itself and grinds a whole task to an
@@ -159,6 +201,33 @@ Appends one record to `corrections/corrections.jsonl` (and indexes it for retrie
 
 The mechanical gate + worker→worker auto-retry handle most fixes with **zero orchestrator tokens**;
 the boss only steps in for judgment. Full routing rules: `config/routing.md`.
+
+---
+
+## Cost model — free-but-weaker vs. strong-but-metered
+
+The routing philosophy the pipeline is built around:
+
+| Tier | Strength | Cost | When |
+|------|----------|------|------|
+| local (`qwen`, or your Ollama model) | weakest | **free** | Start every routine task here. |
+| cloud routine (e.g. `gemini` flash, GPT-mini) | medium | cheap | GPU busy, or local keeps failing a routine task. |
+| cloud hard (e.g. `gemini` pro, GPT/Codex) | strong | pricier | Genuinely hard, well-specified tasks. |
+| the orchestrator itself | judgment | most expensive | Security, architecture, ambiguity — never delegated. |
+
+What keeps this honest:
+
+- **The mechanical gate levels the field** — a weak model whose output compiles and passes
+  *your* tests is worth the same as a strong one, and it cost nothing. Failures bounce back to
+  the worker, not to the orchestrator.
+- **Auto-escalation** (`cascade`) retries a persistently failing task one tier up, *carrying the
+  failed attempt + checker error* so the stronger model doesn't start cold.
+- **Pricing** — set `providers.<name>.cost` (USD per Mtok, flat or per tier) and every cloud
+  call is priced into `metrics/metrics.jsonl`; `python src/metering.py` shows per-tier and total
+  estimated spend.
+- **Budgets are enforced** — `metering.budgets.<name>_tokens_per_day` / `<name>_usd_per_day`:
+  over-budget providers are refused with a clear error and the cascade won't escalate to them.
+  A runaway retry loop cannot drain your credits.
 
 ---
 
@@ -202,12 +271,17 @@ Secrets and machine-local values go in `config/qwen.local.json` (gitignored), wh
 
 Nothing in the gate/agent layer is tied to a particular codebase. To use it on another repo:
 
-1. Point `assign(repo="/path/to/your-repo", done_when="<your test/lint cmd>", …)` at it.
-2. *(Optional)* drop **`<your-repo>/.qwen-pipeline.json`** to override per-project settings — its
-   `agent` block merges over `config/qwen.json → agent` (repo wins). Example:
+1. Point `delegate(repo="/path/to/your-repo", …)` / `assign(repo=…, done_when=…)` at it.
+2. *(Optional)* drop **`<your-repo>/.qwen-pipeline.json`** for per-project settings:
    ```json
-   { "agent": { "max_iters": 4, "diff_excludes": [".aider*", "node_modules", "dist", "*.pyc"] } }
+   {
+     "conventions": "TypeScript strict; no `any`. Zod for validation. snake_case file names.",
+     "agent": { "max_iters": 4, "diff_excludes": [".aider*", "node_modules", "dist", "*.pyc"] }
+   }
    ```
+   `conventions` is injected into the worker prompt on every `delegate(repo=…)` — your style
+   rules are enforced up front instead of corrected after the fact. The `agent` block merges
+   over `config/qwen.json → agent` (repo wins) for `assign`.
 3. Gate languages (`gate.languages.*`) and any batched build step are config-driven — enable/point
    them per project. The MCP surface (`delegate`, `assign`, `log_correction`) is unchanged.
 
@@ -234,7 +308,8 @@ qwen-pipeline/
 │   └── MULTI_AGENT.md            # how the boss + two-worker model works (beginner-friendly)
 ├── src/
 │   ├── server.py                 # FastMCP stdio server: delegate / assign / log_correction
-│   ├── providers.py              # provider handlers: qwen, gemini, openai
+│   ├── providers.py              # provider registry: ollama-local / openai-compatible / vertex-ai
+│   ├── deliver.py                # server-side context fetch + apply/test/revert (token-cheap mode)
 │   ├── agent.py                  # the `assign` file-aware agent (Aider + disposable worktree)
 │   ├── gate.py / gate_cli.py     # mechanical gate (compile/lint) + worker-retry
 │   ├── store.py                  # output-id store + unified-diff apply
@@ -261,6 +336,8 @@ Gitignored (never pushed): `config/qwen.local.json`, `secrets/`, `corrections/*.
 | A pull fills the wrong disk | Ollama isn't using your intended path — see the model-storage gotcha above. |
 | VRAM near OOM with big context | Cap `num_ctx` (KV cache grows with context). Prefer this over downgrading the quant. |
 | Gemini "not enabled yet" | Expected until Vertex creds are configured — see [Enabling Gemini](#enabling-gemini-vertex-ai). |
+| "Daily token/USD budget … exhausted" | Working as intended — the provider hit its `metering.budgets` cap. Use the local provider or raise the cap in `qwen.local.json`. |
+| `delegate` `test=fail — REVERTED` | The worker never satisfied `test_cmd`; the target file was restored. Review the test output tail in the footer, tighten the task/spec, or take the task yourself. |
 | Retrieval not injecting examples | Index empty/stale or embedder down. Rebuild: `python src/retrieval.py reindex`. |
 
 ---

@@ -47,6 +47,16 @@
 - **Default to `qwen`.** Reach for `gemini` `flash` when the GPU is contended or a routine task
   bounces; reach for `gemini` `pro` when a task is measurably too hard for qwen or needs very
   large context. Claude routes directly (not only via auto-escalation).
+- **Cost logic: local = free but weaker; cloud = stronger but metered.** A weak model whose
+  output passes the gate + the project's tests is worth the same as a strong one and cost
+  nothing — so always try free first for routine work, and let the daily budgets
+  (`metering.budgets`, enforced) bound cloud spend. Other providers (openai/GPT, or any
+  config-added openai-compatible endpoint) slot into the same ladder by price.
+- **Prefer the token-cheap delegate form for routine repo work:** pass `repo` +
+  `context_files` (paths, NOT pasted code), `apply_to` + `test_cmd` (the project's own test —
+  the server applies, verifies, reverts on red), and `return_mode="summary"`. Your cost per
+  routine task ≈ spec in, two-line footer out. Use `return_mode="full"` only when you intend
+  to actually review the code line-by-line.
 - **Parallel fan-out (the two workers run at once):** for independent sub-tasks Claude may issue a
   `qwen` call and a `gemini` call in the **same turn** — only `qwen` is GPU-local, so the cloud
   worker adds no hardware contention. Each `assign` runs in its own disposable worktree, so two
@@ -77,8 +87,9 @@ third-party deps, and correct module/API usage. When in doubt, keep C++ on Claud
 ## 6. Cost cascade + front gate (§6.4)
 Two ways a harder task reaches the stronger implementer (gemini): **(a) Claude routes it
 there directly** — the primary path (task looks too hard for qwen → `provider="gemini"`);
-and **(b) auto-escalation** — the §6.1 gate still fails after qwen's retries, so the pipeline
-retries on gemini. Both run gemini's output through the **same** gate + strict tests as qwen.
+and **(b) auto-escalation** — the §6.1 gate still fails after qwen's retries, **or the
+`test_cmd` acceptance run keeps failing after apply**, so the pipeline retries on gemini
+(carrying the failed attempt + verbatim checker/test output — never a cold restart). Both run gemini's output through the **same** gate + strict tests as qwen.
 Order of cost: **qwen (local, free) → gemini flash (cheap) → gemini pro (pricier) → Claude
 (judgment only)**. Auto-escalation is a no-op until `providers.gemini.enabled` (creds pending;
 escalation uses the tier's default model). **Gemini implements; it never "reviews" — Claude is the

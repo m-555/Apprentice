@@ -106,11 +106,26 @@ def _run_aider(wt: str, model: str, model_env: dict[str, str], message: str,
 # worktree. Override per-repo via `<repo>/.qwen-pipeline.json` -> agent.diff_excludes.
 _DEFAULT_DIFF_EXCLUDES = [
     ".aider*", "*.tags.cache*",                      # aider artifacts
+    ".qwen_done.cmd",                                # our done_when wrapper script
     "__pycache__", "*.pyc", ".pytest_cache",         # python
     "node_modules", "dist", "out", "build",          # js/ts build outputs
     "*.js.map", "*.d.ts.map", "tsconfig.tsbuildinfo",
     "Binaries", "Intermediate", "*.obj", "*.o",      # UE / native build outputs
 ]
+
+
+def _write_done_script(wt: str, done_when: str) -> str:
+    """Write `done_when` into a .cmd script inside the worktree and return its path.
+
+    Running the check as a SCRIPT (cmd /c <file>) instead of `cmd /c <string>` stops
+    cmd.exe from re-tokenizing the command line — quoted multi-word args like
+    `findstr /C:"export function foo"` or quoted exe paths survive intact. (This was a
+    real failure: the re-tokenized findstr treated the quoted words as filenames, so
+    done_when never passed even though the worker had done the work.)
+    """
+    path = Path(wt) / ".qwen_done.cmd"
+    path.write_text("@echo off\r\n" + done_when + "\r\n", encoding="utf-8")
+    return str(path)
 
 
 def _excluded(path: str, patterns: list[str]) -> bool:
@@ -165,10 +180,11 @@ def run_agent_task(task: str, done_when: str, repo: str, provider: str,
     done_passed, iterations, done_log, worker_log = False, 0, "", ""
     try:
         message = task
+        done_script = _write_done_script(wt, done_when)
         for i in range(1, max_iters + 1):
             iterations = i
             _wrc, worker_log = _run_aider(wt, model_id, model_env, message, files, cfg)
-            drc, done_log = _run(["cmd", "/c", done_when], cwd=wt,
+            drc, done_log = _run(["cmd", "/c", done_script], cwd=wt,
                                  timeout=int(cfg.get("done_timeout_s", 900)))
             if drc == 0:
                 done_passed = True
