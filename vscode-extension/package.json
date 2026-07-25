@@ -1,0 +1,282 @@
+{
+  "name": "apprentice-vscode",
+  "displayName": "Apprentice",
+  "description": "A coding agent driven by your own model (local or cloud) \u2014 every edit machine-verified against your tests, and reverted if it breaks them.",
+  "version": "0.1.0",
+  "publisher": "m-555",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/m-555/Apprentice.git",
+    "directory": "vscode-extension"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "AI",
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "agent",
+    "llm",
+    "ollama",
+    "local",
+    "codegen"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "apprentice",
+          "title": "Apprentice",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "apprentice": [
+        {
+          "id": "apprentice.chatView",
+          "name": "Agent",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "apprentice.openPanel",
+        "title": "Open Agent Panel",
+        "category": "Apprentice",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "apprentice.chatInTerminal",
+        "title": "Start Chat in Terminal",
+        "category": "Apprentice"
+      },
+      {
+        "command": "apprentice.run",
+        "title": "Run Task Until Tests Pass",
+        "category": "Apprentice",
+        "icon": "$(play)"
+      },
+      {
+        "command": "apprentice.runInTerminal",
+        "title": "Run Task Until Tests Pass (in Terminal)",
+        "category": "Apprentice"
+      },
+      {
+        "command": "apprentice.newSession",
+        "title": "New Session",
+        "category": "Apprentice",
+        "icon": "$(add)"
+      },
+      {
+        "command": "apprentice.stop",
+        "title": "Stop the Agent",
+        "category": "Apprentice",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "apprentice.undo",
+        "title": "Undo the Agent's Last Turn",
+        "category": "Apprentice",
+        "icon": "$(discard)"
+      },
+      {
+        "command": "apprentice.cost",
+        "title": "Show Session Cost",
+        "category": "Apprentice"
+      },
+      {
+        "command": "apprentice.files",
+        "title": "Show Files Changed This Session",
+        "category": "Apprentice"
+      },
+      {
+        "command": "apprentice.resumeLast",
+        "title": "Resume Last Session",
+        "category": "Apprentice",
+        "icon": "$(history)"
+      },
+      {
+        "command": "apprentice.sessions",
+        "title": "Open a Past Session\u2026",
+        "category": "Apprentice"
+      },
+      {
+        "command": "apprentice.setProvider",
+        "title": "Select Model Provider\u2026",
+        "category": "Apprentice"
+      },
+      {
+        "command": "apprentice.setVerify",
+        "title": "Select Verification Mode\u2026",
+        "category": "Apprentice"
+      },
+      {
+        "command": "apprentice.doctor",
+        "title": "Check Setup (doctor)",
+        "category": "Apprentice"
+      },
+      {
+        "command": "apprentice.showLog",
+        "title": "Show Log",
+        "category": "Apprentice",
+        "icon": "$(output)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "apprentice.newSession",
+          "when": "view == apprentice.chatView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "apprentice.stop",
+          "when": "view == apprentice.chatView",
+          "group": "navigation@2"
+        },
+        {
+          "command": "apprentice.undo",
+          "when": "view == apprentice.chatView",
+          "group": "navigation@3"
+        },
+        {
+          "command": "apprentice.resumeLast",
+          "when": "view == apprentice.chatView",
+          "group": "navigation@4"
+        },
+        {
+          "command": "apprentice.showLog",
+          "when": "view == apprentice.chatView",
+          "group": "navigation@5"
+        },
+        {
+          "command": "apprentice.setProvider",
+          "when": "view == apprentice.chatView",
+          "group": "1_config@1"
+        },
+        {
+          "command": "apprentice.setVerify",
+          "when": "view == apprentice.chatView",
+          "group": "1_config@2"
+        },
+        {
+          "command": "apprentice.cost",
+          "when": "view == apprentice.chatView",
+          "group": "1_config@3"
+        },
+        {
+          "command": "apprentice.files",
+          "when": "view == apprentice.chatView",
+          "group": "1_config@4"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "apprentice.openPanel",
+        "key": "ctrl+shift+a",
+        "mac": "cmd+shift+a"
+      },
+      {
+        "command": "apprentice.stop",
+        "key": "escape",
+        "when": "focusedView == apprentice.chatView && apprentice.running"
+      },
+      {
+        "command": "apprentice.newSession",
+        "key": "ctrl+shift+n",
+        "mac": "cmd+shift+n",
+        "when": "focusedView == apprentice.chatView"
+      }
+    ],
+    "configuration": {
+      "title": "Apprentice",
+      "properties": {
+        "apprentice.executable": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Path to the `apprentice` executable. Leave empty to auto-detect: `apprentice` on your PATH, then `#apprentice.pythonPath#` + `#apprentice.repoPath#`."
+        },
+        "apprentice.pythonPath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Python interpreter to run Apprentice from a source checkout (e.g. the venv's `python.exe`). Used with `#apprentice.repoPath#` when no executable is found."
+        },
+        "apprentice.repoPath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Path to the Apprentice repository checkout (the folder containing `src/cli.py`)."
+        },
+        "apprentice.provider": {
+          "type": "string",
+          "default": "",
+          "description": "Model provider to use (e.g. qwen, gemini, openai). Empty = the provider configured in Apprentice's own config."
+        },
+        "apprentice.model": {
+          "type": "string",
+          "default": "",
+          "description": "Model/tier override (e.g. flash, pro). Empty = the provider's default."
+        },
+        "apprentice.verify": {
+          "type": "string",
+          "enum": [
+            "",
+            "off",
+            "gate",
+            "tests"
+          ],
+          "enumDescriptions": [
+            "Use Apprentice's configured default",
+            "No checking \u2014 edits land immediately",
+            "Edited files must compile/lint",
+            "Compile/lint AND your project's tests must pass"
+          ],
+          "default": "",
+          "description": "How strictly the agent's changes are verified before they survive a turn."
+        },
+        "apprentice.testCommand": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "The command that runs this project's tests (e.g. `npx vitest run`). Empty = `test_cmd` from the repo's `.qwen-pipeline.json` or Apprentice's config."
+        },
+        "apprentice.autoApproveCommands": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Run shell commands without asking (`--yes`). Off by default: non-allowlisted commands prompt for approval."
+        },
+        "apprentice.allowDirty": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow starting on a non-git or uncommitted working tree. Off by default so git stays your undo."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"src/test/*.test.js\"",
+    "package": "npm run build && npx @vscode/vsce package --no-dependencies",
+    "vscode:prepublish": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.2",
+    "@types/vscode": "1.90.0",
+    "esbuild": "0.24.2",
+    "typescript": "5.7.2"
+  },
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#21262d",
+    "theme": "dark"
+  }
+}

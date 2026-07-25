@@ -30,6 +30,10 @@ models/
 .aider-venv/
 node_modules/
 
+# VS Code extension build artifacts:
+vscode-extension/dist/
+*.vsix
+
 # ── Python caches ────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]

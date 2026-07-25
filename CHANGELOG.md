@@ -6,6 +6,31 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added — VS Code extension (`vscode-extension/`)
+A frontend for the agent, packaged as a `.vsix`. It contains **no agent logic**: it spawns
+`apprentice … --json` and renders the event stream.
+
+- **Agent panel** in the Activity Bar — streaming replies, expandable tool rows, green
+  *verified* / red *reverted* badges, a header showing the live provider/model/verify
+  mode, changed-file chips that open a native diff against `HEAD`, and inline Allow/Deny
+  for shell commands.
+- **Terminal mode**, **headless runs** (rendered in the panel *or* a terminal), session
+  resume, `/undo` · `/cost` · `/files` as toolbar buttons, and *doctor* wired to the
+  agent's own environment check.
+- **Setup discovery**: `apprentice.executable` → `PATH` → `pythonPath` + `repoPath`
+  (source checkout), with an actionable error instead of a silent failure.
+- **Crash handling**: an agent that dies mid-turn produces an explicit message plus
+  *Show Log* / *Retry*.
+- Keybindings (`Ctrl/Cmd+Shift+A` panel, `Ctrl/Cmd+Shift+N` new session, `Escape` stop).
+
+### Added — streamed replies
+- `text_delta` events carry the model's reply token-by-token as it is generated; the
+  complete message still follows as `text`. Implemented for `ollama-local` (NDJSON) and
+  `openai-compatible` (SSE, including fragmented tool-call reassembly); `vertex-ai`
+  replies still arrive whole. Toggle with `agent_chat.stream` or
+  `providers.<name>.stream`. The terminal REPL prints the reply as it forms, and
+  `--json` consumers get one event per fragment.
+
 ### Added — the standalone agent (`apprentice chat` / `apprentice run`)
 Apprentice is no longer only a delegation server for an expensive orchestrator: it now has
 its **own coding agent**, driven by any single provider (free local or cloud), that reads,

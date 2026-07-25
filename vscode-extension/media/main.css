@@ -1,0 +1,230 @@
+/* Everything is a VS Code CSS variable, so light/dark and custom themes work for free. */
+
+:root {
+  --gap: 8px;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  color: var(--vscode-foreground);
+  background: var(--vscode-sideBar-background);
+}
+
+/* Header: what model and verification mode this session is actually using. */
+#header {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 6px var(--gap);
+  border-bottom: 1px solid var(--vscode-widget-border, transparent);
+  font-size: calc(var(--vscode-font-size) - 1px);
+}
+
+.pill {
+  padding: 1px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--vscode-widget-border, var(--vscode-descriptionForeground));
+  color: var(--vscode-descriptionForeground);
+  white-space: nowrap;
+}
+
+.pill.dim { opacity: 0.7; }
+.pill.strict { color: var(--vscode-testing-iconPassed, #3fb950); border-color: currentColor; }
+.pill.loose { color: var(--vscode-editorWarning-foreground, #d29922); border-color: currentColor; }
+.pill:empty { display: none; }
+
+#log {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: var(--gap);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.msg {
+  padding: 6px 8px;
+  border-radius: 4px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.msg.user {
+  background: var(--vscode-input-background);
+  border-left: 3px solid var(--vscode-focusBorder);
+}
+
+.msg.assistant {
+  background: var(--vscode-editor-background);
+}
+
+/* A tool call: compact single line, monospace detail. */
+.tool {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  font-family: var(--vscode-editor-font-family);
+  font-size: calc(var(--vscode-font-size) - 1px);
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+  padding: 2px 8px;
+}
+
+.tool .name { color: var(--vscode-symbolIcon-functionForeground, var(--vscode-foreground)); }
+.tool .detail { opacity: 0.85; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool .chev { opacity: 0.6; }
+
+.tool-output {
+  margin: 0 8px 4px 20px;
+  padding: 6px 8px;
+  background: var(--vscode-textCodeBlock-background);
+  border-radius: 3px;
+  font-family: var(--vscode-editor-font-family);
+  font-size: calc(var(--vscode-font-size) - 1px);
+  white-space: pre-wrap;
+  overflow-x: auto;
+  max-height: 320px;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 3px;
+  font-weight: 600;
+}
+
+.badge.ok {
+  color: var(--vscode-testing-iconPassed, #3fb950);
+  background: color-mix(in srgb, var(--vscode-testing-iconPassed, #3fb950) 12%, transparent);
+}
+
+.badge.fail {
+  color: var(--vscode-testing-iconFailed, #f85149);
+  background: color-mix(in srgb, var(--vscode-testing-iconFailed, #f85149) 12%, transparent);
+}
+
+.badge.info {
+  color: var(--vscode-charts-blue, #4a9eff);
+  background: color-mix(in srgb, var(--vscode-charts-blue, #4a9eff) 12%, transparent);
+}
+
+.notice {
+  padding: 6px 8px;
+  border-radius: 3px;
+  background: var(--vscode-inputValidation-warningBackground, transparent);
+  border: 1px solid var(--vscode-inputValidation-warningBorder, var(--vscode-widget-border));
+}
+
+/* Approval request — the moment the user is actually in the loop. */
+.confirm {
+  padding: 8px;
+  border-radius: 4px;
+  border: 1px solid var(--vscode-inputValidation-warningBorder, var(--vscode-focusBorder));
+  background: var(--vscode-editor-background);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.confirm .cmd {
+  font-family: var(--vscode-editor-font-family);
+  background: var(--vscode-textCodeBlock-background);
+  padding: 4px 6px;
+  border-radius: 3px;
+  overflow-wrap: anywhere;
+}
+
+.confirm .row { display: flex; gap: 6px; }
+.confirm .resolved { font-style: italic; color: var(--vscode-descriptionForeground); }
+
+button {
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+  border: none;
+  padding: 4px 12px;
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+button:hover { background: var(--vscode-button-hoverBackground); }
+button.secondary {
+  color: var(--vscode-button-secondaryForeground);
+  background: var(--vscode-button-secondaryBackground);
+}
+button.secondary:hover { background: var(--vscode-button-secondaryHoverBackground); }
+
+/* Changed-files tray, above the composer. */
+.changed {
+  border-top: 1px solid var(--vscode-widget-border, transparent);
+  padding: 6px var(--gap);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.changed .label {
+  color: var(--vscode-descriptionForeground);
+  font-size: calc(var(--vscode-font-size) - 1px);
+}
+
+.chip {
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+  cursor: pointer;
+  font-size: calc(var(--vscode-font-size) - 1px);
+}
+
+#composer {
+  display: flex;
+  gap: 6px;
+  padding: var(--gap);
+  border-top: 1px solid var(--vscode-widget-border, transparent);
+  align-items: flex-end;
+}
+
+#input {
+  flex: 1 1 auto;
+  resize: vertical;
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: 2px;
+  padding: 6px;
+}
+
+#input:focus { outline: 1px solid var(--vscode-focusBorder); }
+
+.working {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  color: var(--vscode-descriptionForeground);
+  padding: 2px 8px;
+}
+
+.dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--vscode-descriptionForeground);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .dot { animation: none; opacity: 0.6; } }
+
+.hidden { display: none; }

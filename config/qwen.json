@@ -191,6 +191,8 @@
     "_comment": "The standalone coding agent (`apprentice chat` / `apprentice run`) — a conversational loop with file/search/edit/run tools, driven by ANY single provider (local or cloud). `verify` is the differentiator: after each turn the agent's changes are checked and REVERTED if they fail, with the verbatim error fed back to the model. off = plain agent (edits land immediately); gate = each edited file must pass the mechanical compile/lint gate; tests = gate + the project's own test command (degrades to gate if no test command is configured).",
     "verify": "tests",
     "test_cmd": "",
+    "stream": true,
+    "_stream_note": "Stream the model's reply token-by-token so long turns show progress instead of a dead pause. Supported for ollama-local and openai-compatible providers; vertex-ai replies arrive whole. Disable per provider with providers.<name>.stream=false.",
     "max_steps": 40,
     "max_seconds": 1800,
     "context_budget_tokens": 60000,

@@ -72,6 +72,62 @@ def _new_id(prefix: str, i: int) -> str:
     return f"{prefix}_{i}_{int(time.time() * 1000) % 100000}"
 
 
+# --- streaming --------------------------------------------------------------
+# `on_delta(text)` is called with each token fragment as it arrives, so a UI can show
+# the answer forming instead of a dead pause. Streaming is transparent to callers: the
+# same AssistantTurn is returned either way.
+
+def _stream_lines(url: str, body: dict[str, Any], headers: dict[str, str],
+                  timeout_s: int):
+    """POST and yield decoded response lines as they arrive."""
+    req = urllib.request.Request(
+        url, data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json", **headers},
+    )
+    with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+        for raw in resp:
+            line = raw.decode("utf-8", errors="replace").strip()
+            if line:
+                yield line
+
+
+class ToolCallAccumulator:
+    """Reassemble OpenAI-style streamed tool calls.
+
+    Deltas arrive fragmented and keyed by `index`: the function name usually appears
+    once, then `arguments` in pieces that must be concatenated in order before parsing.
+    """
+
+    def __init__(self) -> None:
+        self._by_index: dict[int, dict[str, str]] = {}
+
+    def add(self, delta_calls: list[dict[str, Any]] | None) -> None:
+        for tc in delta_calls or []:
+            idx = int(tc.get("index", 0) or 0)
+            slot = self._by_index.setdefault(idx, {"id": "", "name": "", "args": ""})
+            if tc.get("id"):
+                slot["id"] = tc["id"]
+            fn = tc.get("function") or {}
+            if fn.get("name"):
+                slot["name"] = fn["name"]
+            if fn.get("arguments"):
+                slot["args"] += fn["arguments"]
+
+    def finish(self) -> list[ToolCall]:
+        out: list[ToolCall] = []
+        for i, (idx, slot) in enumerate(sorted(self._by_index.items())):
+            if not slot["name"]:
+                continue
+            out.append(ToolCall(slot["id"] or _new_id("oai", idx or i),
+                                slot["name"], _coerce_args(slot["args"])))
+        return out
+
+
+def _streaming_enabled(p: dict[str, Any], on_delta) -> bool:
+    """Stream only when someone is listening AND the provider allows it."""
+    return bool(on_delta) and bool(p.get("stream", True))
+
+
 # --- text protocol (models without native tool calling) ---------------------
 _ACTION_RE = re.compile(r"```(?:action|json)?\s*\n(\{.*?\})\s*\n```", re.DOTALL)
 
@@ -140,15 +196,16 @@ def _flatten_for_text_protocol(messages: list[dict[str, Any]],
 # --- kind: ollama-local -----------------------------------------------------
 def _chat_ollama(name: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]],
                  cfg: dict[str, Any], usage: dict[str, Any] | None,
-                 model: str) -> AssistantTurn:
+                 model: str, on_delta=None) -> AssistantTurn:
     p = cfg.get("providers", {}).get(name, {})
     host = p.get("host") or cfg.get("runner", {}).get("host", "http://127.0.0.1:11434")
     model_id = providers._resolve_model(
         p, model, cfg.get("worker_model", {}).get("tag", "qwen3-coder-next"))
+    stream = _streaming_enabled(p, on_delta)
     body: dict[str, Any] = {
         "model": model_id,
         "messages": _ollama_messages(messages),
-        "stream": False,
+        "stream": stream,
         "keep_alive": p.get("keep_alive") or cfg.get("keep_alive", {}).get("value", "30m"),
     }
     if tools:
@@ -156,10 +213,35 @@ def _chat_ollama(name: str, messages: list[dict[str, Any]], tools: list[dict[str
     opts = providers._sampling_options(p)
     if opts:
         body["options"] = opts
+
     t0 = time.monotonic()
     try:
-        data = providers._post_json(f"{host}/api/chat", body, {},
-                                    int(p.get("timeout_s", 600)))
+        if stream:
+            # Ollama streams NDJSON: each line is a partial message; the last has done=true
+            # and carries the token counts. tool_calls appear whole (not fragmented).
+            content_parts: list[str] = []
+            raw_calls: list[dict[str, Any]] = []
+            final: dict[str, Any] = {}
+            for line in _stream_lines(f"{host}/api/chat", body, {},
+                                      int(p.get("timeout_s", 600))):
+                try:
+                    chunk = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                msg_part = chunk.get("message") or {}
+                piece = msg_part.get("content") or ""
+                if piece:
+                    content_parts.append(piece)
+                    on_delta(piece)
+                if msg_part.get("tool_calls"):
+                    raw_calls.extend(msg_part["tool_calls"])
+                if chunk.get("done"):
+                    final = chunk
+            data = {**final, "message": {"content": "".join(content_parts),
+                                         "tool_calls": raw_calls}}
+        else:
+            data = providers._post_json(f"{host}/api/chat", body, {},
+                                        int(p.get("timeout_s", 600)))
     except urllib.error.HTTPError as exc:
         # A 400 here is almost always a malformed message list, NOT an unreachable
         # server — surface the body so the cause is visible instead of guessed.
@@ -210,9 +292,45 @@ def _ollama_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 # --- kind: openai-compatible ------------------------------------------------
+def _openai_stream(url: str, body: dict[str, Any], headers: dict[str, str],
+                   timeout_s: int, on_delta, usage: dict[str, Any] | None
+                   ) -> AssistantTurn:
+    """Consume an OpenAI-style SSE stream into a complete AssistantTurn.
+
+    Lines look like `data: {json}`, terminated by `data: [DONE]`. Text arrives in
+    `delta.content`; tool calls arrive fragmented in `delta.tool_calls` and are
+    reassembled by index.
+    """
+    content_parts: list[str] = []
+    acc = ToolCallAccumulator()
+    body = {**body, "stream": True, "stream_options": {"include_usage": True}}
+    for line in _stream_lines(url, body, headers, timeout_s):
+        if not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if payload == "[DONE]":
+            break
+        try:
+            chunk = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if chunk.get("usage") and usage is not None:
+            u = chunk["usage"]
+            usage["tokens_in"] = int(u.get("prompt_tokens", 0) or 0)
+            usage["tokens_out"] = int(u.get("completion_tokens", 0) or 0)
+        for choice in chunk.get("choices") or []:
+            delta = choice.get("delta") or {}
+            piece = delta.get("content")
+            if piece:
+                content_parts.append(piece)
+                on_delta(piece)
+            acc.add(delta.get("tool_calls"))
+    return AssistantTurn("".join(content_parts), acc.finish())
+
+
 def _chat_openai(name: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]],
                  cfg: dict[str, Any], usage: dict[str, Any] | None,
-                 model: str) -> AssistantTurn:
+                 model: str, on_delta=None) -> AssistantTurn:
     p = cfg.get("providers", {}).get(name, {})
     if not p.get("enabled", False):
         raise RuntimeError(f"Provider '{name}' is not enabled (config providers.{name}).")
@@ -234,6 +352,12 @@ def _chat_openai(name: str, messages: list[dict[str, Any]], tools: list[dict[str
             body[key] = opts[key]
     t0 = time.monotonic()
     try:
+        if _streaming_enabled(p, on_delta):
+            turn = _openai_stream(f"{base_url}/chat/completions", body, headers,
+                                  int(p.get("timeout_s", 300)), on_delta, usage)
+            if usage is not None:
+                usage["duration_s"] = round(time.monotonic() - t0, 3)
+            return turn
         data = providers._post_json(f"{base_url}/chat/completions", body, headers,
                                     int(p.get("timeout_s", 300)))
     except urllib.error.HTTPError as exc:
@@ -264,7 +388,11 @@ def _chat_openai(name: str, messages: list[dict[str, Any]], tools: list[dict[str
 # --- kind: vertex-ai --------------------------------------------------------
 def _chat_vertex(name: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]],
                  cfg: dict[str, Any], usage: dict[str, Any] | None,
-                 model: str) -> AssistantTurn:
+                 model: str, on_delta=None) -> AssistantTurn:
+    # NOTE: Vertex replies are not streamed yet — the SDK's streaming shape differs
+    # enough to deserve its own change. The signature matches so callers stay uniform;
+    # text simply arrives in one piece for this provider.
+    del on_delta
     g = cfg.get("providers", {}).get(name, {})
     if not g.get("enabled", False):
         raise RuntimeError(f"Provider '{name}' is not enabled (config providers.{name}).")
@@ -364,9 +492,14 @@ def supports_chat(cfg: dict[str, Any], provider: str) -> bool:
 
 def chat(messages: list[dict[str, Any]], tools: list[dict[str, Any]],
          cfg: dict[str, Any], provider: str, model: str = "",
-         usage: dict[str, Any] | None = None) -> AssistantTurn:
+         usage: dict[str, Any] | None = None, on_delta=None) -> AssistantTurn:
     """One assistant turn. Uses the provider's native tool API, or the text protocol
-    when `providers.<name>.tool_protocol == "text"` (or no tools were supplied)."""
+    when `providers.<name>.tool_protocol == "text"` (or no tools were supplied).
+
+    `on_delta(text)` — optional. Called with each token fragment as it arrives so a UI
+    can render the reply as it forms. The return value is identical either way, so
+    callers that don't pass it are unaffected.
+    """
     kind = provider_kind(cfg, provider)
     handler = _KIND_CHAT.get(kind)
     if handler is None:
@@ -376,9 +509,11 @@ def chat(messages: list[dict[str, Any]], tools: list[dict[str, Any]],
 
     p = cfg.get("providers", {}).get(provider, {})
     if tools and p.get("tool_protocol", "native") == "text":
+        # The text protocol needs the WHOLE reply before it can be parsed into an
+        # action, so streaming its fragments to the UI would leak raw protocol JSON.
         system, user = _flatten_for_text_protocol(messages, tools)
         turn = handler(provider, [{"role": "system", "content": system},
                                   {"role": "user", "content": user}], [], cfg,
-                       usage, model)
+                       usage, model, None)
         return parse_text_action(turn.content)
-    return handler(provider, messages, tools, cfg, usage, model)
+    return handler(provider, messages, tools, cfg, usage, model, on_delta)

@@ -72,8 +72,14 @@ def _record_usage(session, usage: dict[str, Any], provider: str, model: str) -> 
 
 
 def run_turn(session, verifier: verify_mod.Verifier, registry: dict[str, tools_mod.Tool],
-             user_text: str | None = None) -> Iterator[Event]:
-    """Drive one user request to completion. Yields Events; mutates `session` in place."""
+             user_text: str | None = None, on_delta=None) -> Iterator[Event]:
+    """Drive one user request to completion. Yields Events; mutates `session` in place.
+
+    `on_delta(text)` is a SIDE CHANNEL for streaming: the provider calls it with each
+    token fragment the moment it arrives. It cannot be a yielded event — a generator
+    can't yield from inside a callback — and buffering fragments to yield later would
+    defeat the point. The complete reply still arrives as a normal `text` event.
+    """
     cfg = session.cfg
     chat_cfg = cfg.get("agent_chat", {})
     max_steps = int(chat_cfg.get("max_steps", 40))
@@ -99,7 +105,8 @@ def run_turn(session, verifier: verify_mod.Verifier, registry: dict[str, tools_m
         usage: dict[str, Any] = {}
         try:
             turn = chat_providers.chat(session.messages, schemas, cfg, session.provider,
-                                       session.model, usage)
+                                       session.model, usage,
+                                       on_delta if chat_cfg.get("stream", True) else None)
         except Exception as exc:                      # provider/network failure
             yield Event("stopped", f"Provider error: {exc}")
             return
@@ -168,7 +175,8 @@ def _try_escalate(session, cfg: dict[str, Any]) -> Iterator[Event]:
 
 def run_headless(session, verifier: verify_mod.Verifier,
                  registry: dict[str, tools_mod.Tool], task: str, done_when: str,
-                 on_event: Callable[[Event], None] | None = None) -> dict[str, Any]:
+                 on_event: Callable[[Event], None] | None = None,
+                 on_delta=None) -> dict[str, Any]:
     """Unattended mode: grind `task` until `done_when` exits 0 (the `assign` contract).
 
     Verification runs per turn as usual; `done_when` is the final objective gate. Returns
@@ -186,7 +194,7 @@ def run_headless(session, verifier: verify_mod.Verifier,
     done_passed, rounds, log = False, 0, ""
 
     for rounds in range(1, max_rounds + 1):
-        for ev in run_turn(session, verifier, registry, message):
+        for ev in run_turn(session, verifier, registry, message, on_delta):
             if on_event:
                 on_event(ev)
         rc, log = deliver.run_test_cmd(session.repo, done_when, timeout)

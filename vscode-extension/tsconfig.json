@@ -1,0 +1,23 @@
+{
+  // Type-checking ONLY. esbuild produces dist/ (see esbuild.js); `noEmit` lives here
+  // rather than only in the npm script so a bare `tsc` can never overwrite the bundles
+  // with unbundled output — that would break the packaged .vsix, where the individual
+  // module files don't exist.
+  "compilerOptions": {
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "noEmit": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}

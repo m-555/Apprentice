@@ -136,7 +136,8 @@ apprentice run "add mul(a,b) to calc.py" --done-when "pytest -q" --json
 |---|---|---|
 | `session_start` | run began | `session_id`, `repo`, `provider`, `model`, `verify`, `test_cmd` (+ `mode`/`task`/`done_when` headless, `resumed` in chat) |
 | `user` | your message (chat) | `text` |
-| `text` | assistant prose | `text` |
+| `text_delta` | one token fragment of the reply, as it is generated | `text` |
+| `text` | the assistant's complete message for the turn | `text` |
 | `tool_call` | agent is calling a tool | `tool`, `args` |
 | `tool_result` | what the tool returned | `tool`, `text` |
 | `verify_passed` / `verify_failed` | verdict for the turn | `check` (`gate:…`/`tests`), `text` = verbatim failure |
@@ -151,6 +152,13 @@ apprentice run "add mul(a,b) to calc.py" --done-when "pytest -q" --json
 
 Every event carries `ts` (UTC ISO-8601) and `type`. The schema is **additive** — new
 fields may appear, existing ones won't be renamed.
+
+**Streaming.** The reply arrives as many `text_delta` events and then once more, complete,
+as a single `text` event. A UI should append the deltas to a live bubble and then treat
+`text` as the canonical version rather than printing it again. Disable with
+`agent_chat.stream: false` (or per provider, `providers.<name>.stream: false`) and only
+`text` is emitted. Supported for `ollama-local` and `openai-compatible` providers;
+`vertex-ai` replies arrive whole.
 
 **Approvals over the wire.** In `--json` mode there's no prompt to show, so when a
 non-allowlisted command comes up the agent emits `confirm_request` and reads **one line
@@ -168,6 +176,7 @@ into it; only the output changes.
   mistakes get caught, not that it stops making them. Well-scoped tasks work well;
   "refactor my architecture" does not.
 - **Tool-calling quality varies by model.** Models without native tool support can still be
-  used via `providers.<name>.tool_protocol: "text"`, but it's slower and less reliable.
+  used via `providers.<name>.tool_protocol: "text"`, but it's slower and less reliable —
+  and it can't stream, because the whole reply is needed before an action can be parsed.
 - **`tests` is only as good as your tests.** The agent proves your suite passes — it can't
   know what your suite forgot to check.

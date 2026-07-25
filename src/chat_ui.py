@@ -68,6 +68,45 @@ def _render_json(ev: loop.Event) -> None:
     emit(ev.to_dict())
 
 
+def _make_renderers(json_mode: bool, stream: bool):
+    """Return (render_event, on_delta).
+
+    They are built together because they must agree: in the terminal, text that was
+    already streamed character-by-character must NOT be printed again when the
+    complete `text` event arrives.
+    """
+    if json_mode:
+        on_delta = (lambda piece: emit({"type": "text_delta", "text": piece})) \
+            if stream else None
+        return _render_json, on_delta
+
+    if not stream:
+        return _render, None
+
+    state = {"streamed": False}
+
+    def on_delta(piece: str) -> None:
+        if not state["streamed"]:
+            state["streamed"] = True
+            print()                      # break away from the "you >" prompt line
+        try:
+            sys.stdout.write(piece)
+            sys.stdout.flush()
+        except UnicodeEncodeError:
+            enc = getattr(sys.stdout, "encoding", None) or "ascii"
+            sys.stdout.write(piece.encode(enc, "replace").decode(enc, "replace"))
+            sys.stdout.flush()
+
+    def render(ev: loop.Event) -> None:
+        if ev.kind == "text" and state["streamed"]:
+            state["streamed"] = False    # already shown live; just close the line
+            _out()
+            return
+        _render(ev)
+
+    return render, on_delta
+
+
 def _git_state(repo: str) -> tuple[bool, bool]:
     """(is_git_repo, is_dirty)."""
     r = subprocess.run(["git", "-C", repo, "status", "--porcelain"],
@@ -203,7 +242,8 @@ def chat(repo: str, cfg: dict[str, Any], provider: str, model: str = "",
             _resolve_test_cmd(repo, cfg, test_cmd))
 
     verifier, registry = _make_runtime(sess, cfg, auto_yes, json_mode)
-    render = _render_json if json_mode else _render
+    render, on_delta = _make_renderers(
+        json_mode, bool(chat_cfg.get("stream", True)))
 
     if json_mode:
         emit({**_session_start_event(sess, verifier), "resumed": bool(resume)})
@@ -283,7 +323,7 @@ def chat(repo: str, cfg: dict[str, Any], provider: str, model: str = "",
         if json_mode:
             emit({"type": "user", "text": line})
         try:
-            for ev in loop.run_turn(sess, verifier, registry, line):
+            for ev in loop.run_turn(sess, verifier, registry, line, on_delta):
                 render(ev)
         except KeyboardInterrupt:
             render(loop.Event("stopped", "interrupted"))
@@ -318,7 +358,8 @@ def run_headless(repo: str, cfg: dict[str, Any], task: str, done_when: str,
         verify or cfg.get("agent_chat", {}).get("verify", "tests"),
         _resolve_test_cmd(repo, cfg, test_cmd))
     verifier, registry = _make_runtime(sess, cfg, auto_yes=True, json_mode=json_mode)
-    render = _render_json if json_mode else _render
+    render, on_delta = _make_renderers(
+        json_mode, bool(cfg.get("agent_chat", {}).get("stream", True)))
 
     if json_mode:
         emit({**_session_start_event(sess, verifier), "mode": "headless",
@@ -327,7 +368,8 @@ def run_headless(repo: str, cfg: dict[str, Any], task: str, done_when: str,
         _out(f"Apprentice headless | repo={repo} | provider={sess.provider} | "
              f"done_when={done_when}")
 
-    result = loop.run_headless(sess, verifier, registry, task, done_when, render)
+    result = loop.run_headless(sess, verifier, registry, task, done_when, render,
+                               on_delta)
     sess.save()
 
     if json_mode:

@@ -12,12 +12,15 @@ stronger but metered** — so the pipeline verifies everything mechanically (com
 your project's own tests), starts cheap, escalates only on failure, prices every cloud call,
 and enforces daily budgets.
 
-**Two ways to use it:**
+**Three ways to use it:**
 
 1. **Standalone agent** — `apprentice chat` gives you a coding agent in your terminal, driven by
    one model of your choice. No orchestrator subscription needed. Every change it makes is
    verified and **auto-reverted if it breaks your tests**. → **[docs/AGENT.md](docs/AGENT.md)**
-2. **Delegation server** — an **MCP server** exposing `delegate`, `assign`, `log_correction`, so
+2. **VS Code extension** — the same agent in a sidebar panel: streaming replies, tool activity,
+   verification badges, one-click diffs, and inline approval for shell commands.
+   → **[vscode-extension/](vscode-extension/)**
+3. **Delegation server** — an **MCP server** exposing `delegate`, `assign`, `log_correction`, so
    an orchestrator (Claude Code, …) can offload routine coding to cheaper models and stay the
    judge.
 
@@ -181,8 +184,20 @@ verbatim failure goes back to the model to fix:
 `--verify off | gate | tests` picks how strict that is; `/undo`, `/provider`, `/cost` and
 friends work mid-session; a model that keeps failing escalates to a stronger tier
 automatically. Shell commands are allowlist/denylist-checked and prompt before running.
-Add **`--json`** to stream JSON-lines events instead of text — the integration surface for a
-VS Code extension, a web UI, or CI. Full guide: **[docs/AGENT.md](docs/AGENT.md)**.
+Replies stream in token-by-token (local + OpenAI-compatible providers), and **`--json`**
+switches the output to JSON-lines events — the integration surface for the VS Code
+extension, a web UI, or CI. Full guide: **[docs/AGENT.md](docs/AGENT.md)**.
+
+### In VS Code
+
+```bash
+cd vscode-extension && npm install && npm run package
+code --install-extension apprentice-vscode-0.1.0.vsix
+```
+
+Then `Ctrl/Cmd+Shift+A` opens the agent panel in any repo. It drives the same CLI, so
+everything above (providers, verification, budgets) applies unchanged.
+See **[vscode-extension/README.md](vscode-extension/README.md)**.
 
 ---
 
@@ -388,6 +403,10 @@ qwen-pipeline/
 │   ├── metering.py               # per-delegation cost/outcome log
 │   ├── host_verify.py            # optional batched build/test runner (project-specific)
 │   └── roles.py                  # role -> system-prompt map
+├── vscode-extension/             # the VS Code frontend (TypeScript; spawns the CLI)
+│   ├── src/                      # locate/config/protocol/agentProcess/chatView/…
+│   ├── media/                    # webview assets (theme-aware CSS, no external deps)
+│   └── src/test/                 # node:test units + a fake-agent fixture (offline)
 ├── tests/test_pipeline.py        # deterministic, offline (stubs providers/embeddings)
 └── corrections/                  # GITIGNORED contents: corrections + retrieval index (local only)
 ```

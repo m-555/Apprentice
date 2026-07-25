@@ -791,7 +791,8 @@ class _ScriptedModel:
         self.turns = list(turns)
         self.seen_messages = []
 
-    def __call__(self, messages, tools, cfg, provider, model="", usage=None):
+    def __call__(self, messages, tools, cfg, provider, model="", usage=None,
+                 on_delta=None):
         self.seen_messages.append(list(messages))
         if usage is not None:
             usage.update({"tokens_in": 10, "tokens_out": 5, "duration_s": 0.1})
@@ -900,6 +901,154 @@ def test_loop_budget_blocks_before_calling_model():
                                      policy="off")
     assert events[0].kind == "stopped" and "budget" in events[0].text
     assert not model.seen_messages          # the provider was never called
+
+
+# --- streaming ---------------------------------------------------------------
+def test_stream_tool_call_accumulator():
+    """OpenAI streams tool calls in fragments keyed by index — they must reassemble."""
+    acc = chat_providers.ToolCallAccumulator()
+    acc.add([{"index": 0, "id": "call_1", "function": {"name": "edit_file",
+                                                       "arguments": '{"path":'}}])
+    acc.add([{"index": 0, "function": {"arguments": ' "a.py",'}}])
+    acc.add([{"index": 0, "function": {"arguments": ' "old": "x"}'}}])
+    calls = acc.finish()
+    assert len(calls) == 1
+    assert calls[0].name == "edit_file" and calls[0].id == "call_1"
+    assert calls[0].args == {"path": "a.py", "old": "x"}
+
+    # two parallel calls stay separate and ordered
+    acc2 = chat_providers.ToolCallAccumulator()
+    acc2.add([{"index": 1, "function": {"name": "b", "arguments": "{}"}},
+              {"index": 0, "function": {"name": "a", "arguments": "{}"}}])
+    assert [c.name for c in acc2.finish()] == ["a", "b"]
+
+    # a fragment that never got a name is not a call
+    acc3 = chat_providers.ToolCallAccumulator()
+    acc3.add([{"index": 0, "function": {"arguments": "{}"}}])
+    assert acc3.finish() == []
+
+
+def test_stream_ollama_assembles_reply(monkeypatch=None):
+    """Ollama streams NDJSON: deltas must fire live AND assemble into the same turn."""
+    chunks = [
+        '{"message":{"content":"Hel"}}',
+        '{"message":{"content":"lo"}}',
+        '{"message":{"content":"","tool_calls":[{"function":{"name":"read_file",'
+        '"arguments":{"path":"a.py"}}}]}}',
+        '{"done":true,"prompt_eval_count":12,"eval_count":3}',
+    ]
+    old = chat_providers._stream_lines
+    chat_providers._stream_lines = lambda url, body, headers, timeout: iter(chunks)
+    seen: list[str] = []
+    usage: dict = {}
+    try:
+        turn = chat_providers._chat_ollama(
+            "qwen", [{"role": "user", "content": "hi"}], [], _CFG, usage, "",
+            seen.append)
+    finally:
+        chat_providers._stream_lines = old
+    assert seen == ["Hel", "lo"]              # fired incrementally, in order
+    assert turn.content == "Hello"            # and assembled correctly
+    assert turn.tool_calls[0].name == "read_file"
+    assert usage["tokens_in"] == 12 and usage["tokens_out"] == 3
+
+
+def test_stream_openai_sse():
+    """OpenAI SSE: `data:` lines, [DONE] terminator, usage in the final chunk."""
+    lines = [
+        'data: {"choices":[{"delta":{"content":"He"}}]}',
+        'data: {"choices":[{"delta":{"content":"y"}}]}',
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1",'
+        '"function":{"name":"run_tests","arguments":"{}"}}]}}]}',
+        'data: {"usage":{"prompt_tokens":5,"completion_tokens":2},"choices":[]}',
+        "data: [DONE]",
+        'data: {"choices":[{"delta":{"content":"IGNORED AFTER DONE"}}]}',
+    ]
+    old = chat_providers._stream_lines
+    chat_providers._stream_lines = lambda url, body, headers, timeout: iter(lines)
+    seen: list[str] = []
+    usage: dict = {}
+    try:
+        turn = chat_providers._openai_stream("http://x/v1/chat/completions", {}, {}, 10,
+                                             seen.append, usage)
+    finally:
+        chat_providers._stream_lines = old
+    assert seen == ["He", "y"] and turn.content == "Hey"
+    assert turn.tool_calls[0].name == "run_tests"
+    assert usage["tokens_in"] == 5 and usage["tokens_out"] == 2
+
+
+def test_streaming_is_opt_in_per_provider():
+    assert chat_providers._streaming_enabled({}, print) is True        # default on
+    assert chat_providers._streaming_enabled({"stream": False}, print) is False
+    assert chat_providers._streaming_enabled({}, None) is False        # nobody listening
+
+
+def test_loop_passes_delta_sink_to_provider():
+    """run_turn must hand the provider a live sink, not buffer fragments."""
+    repo = _agent_repo()
+    seen: list[str] = []
+    captured: dict = {}
+
+    def fake_chat(messages, tools, cfg, provider, model="", usage=None, on_delta=None):
+        captured["on_delta"] = on_delta
+        if on_delta:
+            on_delta("partial ")
+            on_delta("answer")
+        if usage is not None:
+            usage.update({"tokens_in": 1, "tokens_out": 1})
+        return chat_providers.AssistantTurn("partial answer", [])
+
+    s = session_mod.Session(str(repo), _CFG, "qwen", verify_policy="off")
+    v = verify_mod.Verifier(str(repo), _CFG, "off")
+    reg = tools_mod.build_tools(tools_mod.ToolContext(repo=str(repo), cfg=_CFG))
+    old = loop.chat_providers.chat
+    loop.chat_providers.chat = fake_chat
+    try:
+        events = list(loop.run_turn(s, v, reg, "hi", seen.append))
+    finally:
+        loop.chat_providers.chat = old
+    assert captured["on_delta"] is not None         # a live sink was passed through
+    assert seen == ["partial ", "answer"]           # delivered DURING the call
+    assert any(e.kind == "text" and e.text == "partial answer" for e in events)
+
+
+def test_terminal_renderer_does_not_double_print_streamed_text():
+    import io
+    import contextlib
+    import chat_ui
+
+    render, on_delta = chat_ui._make_renderers(json_mode=False, stream=True)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        on_delta("hello ")
+        on_delta("world")
+        render(loop.Event("text", "hello world"))    # must NOT print it again
+        render(loop.Event("tool_call", name="read_file", args={"path": "a.py"}))
+    out = buf.getvalue()
+    assert out.count("hello world") == 1
+    assert "read_file" in out
+
+    # with streaming off, the complete text is printed normally
+    render2, on_delta2 = chat_ui._make_renderers(json_mode=False, stream=False)
+    assert on_delta2 is None
+    buf2 = io.StringIO()
+    with contextlib.redirect_stdout(buf2):
+        render2(loop.Event("text", "whole reply"))
+    assert "whole reply" in buf2.getvalue()
+
+
+def test_json_renderer_emits_text_delta():
+    import io
+    import contextlib
+    import chat_ui
+
+    _render, on_delta = chat_ui._make_renderers(json_mode=True, stream=True)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        on_delta("chunk")
+    ev = json.loads(buf.getvalue().strip())
+    assert ev["type"] == "text_delta" and ev["text"] == "chunk" and "ts" in ev
 
 
 # --- --json event protocol (what a VS Code / web UI consumes) ----------------
