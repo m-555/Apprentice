@@ -3,6 +3,11 @@
 This doc explains the mental model behind the pipeline: **one boss brain directing two cheap
 worker brains**, and why it's built this way.
 
+> **Note:** this describes the *delegation* mode, where an orchestrator like Claude Code is the
+> boss. Apprentice also has its **own agent runtime** now — `apprentice chat`, where one model of
+> your choice is both brain and worker, with every edit machine-verified. If you don't have an
+> orchestrator subscription, start there: **[AGENT.md](AGENT.md)**.
+
 ## What is an "agent", really?
 
 A plain LLM (the chat box) only talks — you paste code in, it prints code back, you copy it out by
@@ -20,7 +25,8 @@ choices.** You can put a cheap/local brain inside a capable runtime.
 | Piece | What it is | Brain | Its job here |
 |-------|-----------|-------|--------------|
 | **Claude Code** | A coding-agent runtime | 🔒 Claude only | **The boss.** Splits work, writes the acceptance test, routes tasks, reviews, commits. Spends *few* tokens. |
-| **Aider** | A model-agnostic coding-agent runtime | 🔓 any model (via *litellm*) | **The workers.** One instance drives local **qwen-coder** (free), one drives **Gemini** (cloud). They do the typing. |
+| **Apprentice's own runtime** | This project's agent loop (`apprentice chat` / `run`) | 🔓 any model | **Worker or standalone.** Same tools as the others, plus machine-verified edits (auto-revert on red). Used directly, or as the engine behind `run`. |
+| **Aider** | A model-agnostic coding-agent runtime | 🔓 any model (via *litellm*) | **The `assign` worker** (optional install). One instance drives local **qwen-coder** (free), one drives **Gemini** (cloud). Being superseded by the runtime above. |
 | **qwen-coder** (Ollama) | Local 80B MoE model | — | Worker brain #1: routine, self-contained code. Free, runs on your GPU. |
 | **Gemini** (Vertex AI) | Google's cloud model, two tiers | — | Worker brain #2: `flash` for routine cloud work, `pro` for genuinely hard tasks. |
 

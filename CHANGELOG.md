@@ -6,6 +6,35 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added — the standalone agent (`apprentice chat` / `apprentice run`)
+Apprentice is no longer only a delegation server for an expensive orchestrator: it now has
+its **own coding agent**, driven by any single provider (free local or cloud), that reads,
+searches, edits, and runs commands in a repo.
+
+- **`apprentice chat`** — interactive REPL with slash commands (`/undo`, `/verify`,
+  `/provider`, `/model`, `/cost`, `/files`, `/save`), transcripts in `<data home>/sessions/`
+  and `--resume <id>`. **`apprentice run "task" --done-when "<cmd>"`** is the unattended
+  form (same engine), and **`apprentice sessions`** lists past runs.
+- **Machine-verified edits — the differentiator.** `--verify off|gate|tests` (default
+  `tests`): after each turn the agent's changes are checked, and on failure the touched
+  files are restored **byte-for-byte** with the verbatim error fed back to the model.
+  `tests` degrades to `gate` when no test command is configured rather than claiming a
+  verification it didn't perform.
+- **Escalation when stuck** — after N failed verifications the session switches to
+  `cascade.escalate_to` (enabled + under-budget only), telling the stronger model to
+  re-read the files rather than trust the failed attempts.
+- **Safety enforced in code**: repo-scoped paths for every file tool; `allowed_cmds` run
+  silently, `denied_cmd_patterns` never run, everything else prompts (`--yes` to disable);
+  refuses a non-git or dirty tree (`--allow-dirty`); step/time caps plus the existing daily
+  token/USD budgets.
+- **Long sessions** — automatic context compaction keeps the original request and recent
+  turns verbatim and digests the middle.
+- New modules: `chat_providers.py` (multi-turn + tool calls normalized across
+  ollama-local / openai-compatible / vertex-ai, plus a **text-protocol fallback** for models
+  without native tool support), `tools.py`, `verify.py`, `session.py`, `loop.py`,
+  `chat_ui.py`, and shared `budgets.py` / `corrections.py` (extracted from `server.py`;
+  the MCP path is unchanged). Config: new `agent_chat` block. Docs: **docs/AGENT.md**.
+
 ### Added — packaging: `pipx install` + `apprentice` CLI
 - **Installable package** (`pyproject.toml`, hatchling): `pipx install
   git+https://github.com/m-555/Apprentice.git` (or `pip install apprentice-pipeline` once on

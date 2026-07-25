@@ -187,6 +187,25 @@
     "build_timeout_s": 1800,
     "test_timeout_s": 900
   },
+  "agent_chat": {
+    "_comment": "The standalone coding agent (`apprentice chat` / `apprentice run`) — a conversational loop with file/search/edit/run tools, driven by ANY single provider (local or cloud). `verify` is the differentiator: after each turn the agent's changes are checked and REVERTED if they fail, with the verbatim error fed back to the model. off = plain agent (edits land immediately); gate = each edited file must pass the mechanical compile/lint gate; tests = gate + the project's own test command (degrades to gate if no test command is configured).",
+    "verify": "tests",
+    "test_cmd": "",
+    "max_steps": 40,
+    "max_seconds": 1800,
+    "context_budget_tokens": 60000,
+    "compact_keep_recent": 8,
+    "repo_map_max_files": 400,
+    "cmd_timeout_s": 300,
+    "test_timeout_s": 600,
+    "headless_max_rounds": 3,
+    "confirm_commands": true,
+    "require_clean_git": true,
+    "escalate_after_failed_verifies": 2,
+    "allowed_cmds": ["npm test", "npm run", "npx vitest", "npx tsc", "pytest", "python -m pytest", "cargo test", "go test", "dotnet test", "mvn test", "gradle test", "make test", "git status", "git diff", "git log", "ls", "dir"],
+    "denied_cmd_patterns": ["rm -rf", "rmdir /s", "del /f", "format ", "git push", "git reset --hard", "curl ", "wget ", "invoke-webrequest", "iwr ", "shutdown", "mkfs", ":(){", "sudo ", "chmod 777"],
+    "_note": "allowed_cmds run without asking (prefix match, case-insensitive). denied_cmd_patterns are NEVER run (substring match) — the model cannot override them. Anything else asks the user first unless --yes. File paths are always confined to the target repo regardless of these lists."
+  },
   "cascade": {
     "_comment": "§6.4 cost-ordered escalation. When the requested tier still FAILS the §6.1 mechanical gate after gate.max_retries, the pipeline escalates to `escalate_to` IF that provider is enabled (providers.<name>.enabled). Otherwise it falls through to Claude. Gemini is gated on creds today, so escalation is a no-op until providers.gemini.enabled=true. The 'front gate' (which tasks skip the cascade and go straight to Claude) is a Claude-side routing decision — see config/routing.md §6.",
     "escalate_to": "gemini",

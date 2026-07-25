@@ -30,11 +30,13 @@ from mcp.server.fastmcp import FastMCP
 try:  # imported as the installed `apprentice` package
     from .roles import ROLES, role_names
     from .providers import PROVIDERS, provider_names, resolve as resolve_provider
-    from . import paths, retrieval, gate, metering, store, agent, deliver
+    from . import (paths, retrieval, gate, metering, store, agent, deliver,
+                   budgets, corrections)
 except ImportError:  # running flat from a repo checkout (python src/server.py)
     from roles import ROLES, role_names
     from providers import PROVIDERS, provider_names, resolve as resolve_provider
     import paths, retrieval, gate, metering, store, agent, deliver
+    import budgets, corrections
 
 # Data locations come from paths.py (repo root in a checkout; APPRENTICE_HOME /
 # ~/.apprentice when installed via pip/pipx). Kept as module attrs for tests.
@@ -68,31 +70,9 @@ def _provider_enabled(name: str) -> bool:
 
 
 def _budget_exceeded(prov: str) -> str:
-    """Return a refusal message if `prov` is over a configured daily budget, else "".
-    Two cap styles (0/absent = no cap), counted from UTC midnight over metrics.jsonl:
-      metering.budgets.<prov>_tokens_per_day  (tokens_out)
-      metering.budgets.<prov>_usd_per_day     (est_cost_usd — needs providers.<prov>.cost)"""
-    budgets = _CFG.get("metering", {}).get("budgets", {})
-    day_start = datetime.now(timezone.utc).strftime("%Y-%m-%dT00:00:00")
-
-    tok_budget = int(budgets.get(f"{prov}_tokens_per_day", 0) or 0)
-    if tok_budget > 0:
-        used = metering.tier_token_total(prov, since_iso=day_start)
-        if used >= tok_budget:
-            return (f"Daily token budget for provider '{prov}' is exhausted: {used}/"
-                    f"{tok_budget} tokens_out since UTC midnight. Use another provider "
-                    f"(e.g. qwen, local/free) or raise "
-                    f"metering.budgets.{prov}_tokens_per_day in config/qwen.local.json.")
-
-    usd_budget = float(budgets.get(f"{prov}_usd_per_day", 0) or 0)
-    if usd_budget > 0:
-        spent = metering.tier_cost_total(prov, since_iso=day_start)
-        if spent >= usd_budget:
-            return (f"Daily USD budget for provider '{prov}' is exhausted: "
-                    f"${spent:.4f}/${usd_budget:.2f} since UTC midnight. Use another "
-                    f"provider (e.g. qwen, local/free) or raise "
-                    f"metering.budgets.{prov}_usd_per_day in config/qwen.local.json.")
-    return ""
+    """Refusal message if `prov` is over a configured daily budget, else "".
+    Thin wrapper over the shared implementation (also used by the agent)."""
+    return budgets.exceeded(_CFG, prov)
 
 
 def _gemini_agent_env() -> dict[str, str]:
@@ -112,17 +92,11 @@ def _gemini_agent_env() -> dict[str, str]:
 def _write_correction(record: dict[str, Any]) -> bool:
     """Append a correction record to corrections.jsonl and index it for retrieval.
 
-    Shared by the MCP `log_correction` tool (Claude-authored corrections) and the
-    §6.1 worker->worker auto-retry loop (machine-verified corrections). Returns
-    whether the record was indexed (embedding is fail-safe — the record is never lost).
+    Shared by the MCP `log_correction` tool (orchestrator-authored corrections), the
+    §6.1 worker->worker auto-retry loop, and the agent's verify loop (machine-verified).
+    Module-level `_CORRECTIONS_PATH` is honored so tests can redirect it.
     """
-    _CORRECTIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with _CORRECTIONS_PATH.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
-    try:
-        return retrieval.index_record(record, _CFG)
-    except Exception:
-        return False
+    return corrections.write(record, _CFG, _CORRECTIONS_PATH)
 
 
 def _call_provider(prov, system, user, usage_acc, model=""):

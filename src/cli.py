@@ -3,10 +3,24 @@
 Commands:
   apprentice init        set up the data home: create dirs, seed default config,
                          check Ollama, and print the MCP registration command
+  apprentice chat        interactive coding agent in the current repo (see below)
+  apprentice run         headless agent: work a task until a done_when command passes
   apprentice serve       run the MCP stdio server (what your orchestrator spawns)
   apprentice doctor      environment checks (config, Ollama, models, optional extras)
   apprentice report [N]  metering report over the last N events (default 50)
   apprentice reindex     rebuild the retrieval index from corrections.jsonl
+  apprentice sessions    list recent agent sessions (resume with chat --resume <id>)
+
+Agent options (chat/run):
+  --repo PATH        target repository (default: current directory)
+  --provider NAME    qwen (local, default) | gemini | openai | any configured provider
+  --model TIER       provider model/tier override (e.g. flash, pro)
+  --verify MODE      off | gate | tests   (default: config agent_chat.verify)
+  --test-cmd CMD     the project's test command (else .qwen-pipeline.json / config)
+  --yes              don't prompt before non-allowlisted shell commands
+  --allow-dirty      allow an uncommitted/non-git working tree
+  --resume ID        continue a saved chat session
+  --done-when CMD    (run only) the acceptance command that must exit 0
 
 Non-interactive by design: `init` is idempotent and prints what it did/found, so it
 works the same in a terminal, a script, or CI.
@@ -143,6 +157,66 @@ def cmd_reindex() -> int:
     return 0
 
 
+def _agent_parser(prog: str, headless: bool) -> "argparse.ArgumentParser":
+    import argparse
+    p = argparse.ArgumentParser(prog=f"apprentice {prog}", add_help=True)
+    if headless:
+        p.add_argument("task", help="what the agent should do")
+        p.add_argument("--done-when", required=True,
+                       help="command that must exit 0 for the task to count as done")
+    p.add_argument("--repo", default=".")
+    p.add_argument("--provider", default="")
+    p.add_argument("--model", default="")
+    p.add_argument("--verify", default="", choices=["", "off", "gate", "tests"])
+    p.add_argument("--test-cmd", dest="test_cmd", default="")
+    p.add_argument("--yes", action="store_true")
+    p.add_argument("--allow-dirty", dest="allow_dirty", action="store_true")
+    if not headless:
+        p.add_argument("--resume", default="")
+    return p
+
+
+def cmd_chat(argv: list[str]) -> int:
+    try:
+        from . import chat_ui
+    except ImportError:
+        import chat_ui
+    args = _agent_parser("chat", headless=False).parse_args(argv)
+    cfg = paths.load_config()
+    provider = args.provider or cfg.get("providers", {}).get("default", "qwen")
+    return chat_ui.chat(args.repo, cfg, provider, args.model, args.verify,
+                        args.test_cmd, args.yes, args.allow_dirty, args.resume)
+
+
+def cmd_run(argv: list[str]) -> int:
+    try:
+        from . import chat_ui
+    except ImportError:
+        import chat_ui
+    args = _agent_parser("run", headless=True).parse_args(argv)
+    cfg = paths.load_config()
+    provider = args.provider or cfg.get("providers", {}).get("default", "qwen")
+    return chat_ui.run_headless(args.repo, cfg, args.task, args.done_when, provider,
+                                args.model, args.verify, args.test_cmd)
+
+
+def cmd_sessions() -> int:
+    try:
+        from . import session as session_mod
+    except ImportError:
+        import session as session_mod
+    rows = session_mod.Session.list_recent(15)
+    if not rows:
+        print("No agent sessions yet. Start one: apprentice chat")
+        return 0
+    for r in rows:
+        print(f"  {r['id']}  {r['provider']:<8} {r['repo']}")
+        if r["first_task"]:
+            print(f"            {r['first_task']}")
+    print("\nResume: apprentice chat --resume <id>")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     cmd = argv[0] if argv else "help"
@@ -152,6 +226,12 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_serve()
     if cmd == "doctor":
         return cmd_doctor()
+    if cmd == "chat":
+        return cmd_chat(argv[1:])
+    if cmd == "run":
+        return cmd_run(argv[1:])
+    if cmd == "sessions":
+        return cmd_sessions()
     if cmd == "report":
         return cmd_report(int(argv[1]) if len(argv) > 1 else 50)
     if cmd == "reindex":

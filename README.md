@@ -12,8 +12,17 @@ stronger but metered** — so the pipeline verifies everything mechanically (com
 your project's own tests), starts cheap, escalates only on failure, prices every cloud call,
 and enforces daily budgets.
 
-The apprentices sit behind one small **MCP server** exposing three tools — `delegate`, `assign`,
-`log_correction` — so any MCP-capable orchestrator can drive them.
+**Two ways to use it:**
+
+1. **Standalone agent** — `apprentice chat` gives you a coding agent in your terminal, driven by
+   one model of your choice. No orchestrator subscription needed. Every change it makes is
+   verified and **auto-reverted if it breaks your tests**. → **[docs/AGENT.md](docs/AGENT.md)**
+2. **Delegation server** — an **MCP server** exposing `delegate`, `assign`, `log_correction`, so
+   an orchestrator (Claude Code, …) can offload routine coding to cheaper models and stay the
+   judge.
+
+Both share the same engine: providers, mechanical gate, tests, budgets, and the corrections
+store that makes the workers better over time.
 
 New here? Start with **[docs/MULTI_AGENT.md](docs/MULTI_AGENT.md)** — it explains, in beginner
 terms, what an "agent" is and how the boss + two-worker model fits together.
@@ -146,6 +155,33 @@ throughput ≈ 50–58 tok/s; cold load ≈ 55 s.
 > `db.sqlite` and, when it spawns the server, sets `OLLAMA_MODELS` to that value — overriding your
 > env var. If a large `ollama pull` fills the wrong disk, point both the env var **and** the app's
 > DB at your intended path, then confirm with `ollama list`.
+
+---
+
+## The standalone agent
+
+```bash
+cd /path/to/your-repo
+apprentice chat                                    # local free model, verification on
+apprentice chat --provider gemini --model pro      # a stronger cloud model
+apprentice run "add mul(a,b)" --done-when "pytest -q"   # unattended
+```
+
+It reads, searches, edits, and runs commands in your repo — and after every turn its changes
+are checked. If they fail your project's tests, they are **reverted byte-for-byte** and the
+verbatim failure goes back to the model to fix:
+
+```
+  -> read_file(calc.py)
+  -> edit_file(calc.py)
+  -> run_tests()
+  [OK] verified (tests)
+```
+
+`--verify off | gate | tests` picks how strict that is; `/undo`, `/provider`, `/cost` and
+friends work mid-session; a model that keeps failing escalates to a stronger tier
+automatically. Shell commands are allowlist/denylist-checked and prompt before running.
+Full guide: **[docs/AGENT.md](docs/AGENT.md)**.
 
 ---
 
@@ -335,9 +371,15 @@ qwen-pipeline/
 │   ├── CONFIGURATION.md          # config reference + enabling Gemini
 │   └── MULTI_AGENT.md            # how the boss + two-worker model works (beginner-friendly)
 ├── src/
+│   ├── cli.py                    # the `apprentice` command (init/chat/run/serve/doctor/…)
 │   ├── server.py                 # FastMCP stdio server: delegate / assign / log_correction
 │   ├── providers.py              # provider registry: ollama-local / openai-compatible / vertex-ai
+│   ├── chat_providers.py         # multi-turn chat + tool calls, normalized across providers
+│   ├── loop.py / session.py      # the agent loop; history, repo map, compaction, transcripts
+│   ├── tools.py / verify.py      # agent tools (repo-scoped) ; snapshot → check → revert
+│   ├── chat_ui.py                # the REPL for `apprentice chat` / `apprentice run`
 │   ├── deliver.py                # server-side context fetch + apply/test/revert (token-cheap mode)
+│   ├── budgets.py / corrections.py  # shared daily caps; the corrections writer
 │   ├── agent.py                  # the `assign` file-aware agent (Aider + disposable worktree)
 │   ├── gate.py / gate_cli.py     # mechanical gate (compile/lint) + worker-retry
 │   ├── store.py                  # output-id store + unified-diff apply

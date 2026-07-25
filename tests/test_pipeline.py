@@ -28,6 +28,11 @@ import deliver        # noqa: E402
 import providers      # noqa: E402
 import paths          # noqa: E402
 import cli            # noqa: E402
+import chat_providers  # noqa: E402
+import tools as tools_mod  # noqa: E402
+import verify as verify_mod  # noqa: E402
+import session as session_mod  # noqa: E402
+import loop           # noqa: E402
 
 _CFG = json.loads((Path(__file__).resolve().parent.parent / "config" / "qwen.json")
                   .read_text(encoding="utf-8"))
@@ -581,6 +586,320 @@ def test_metering_report():
                      **metering.task_ref("t2")}, _CFG)
     rep = metering.report(10)
     assert "ZERO Claude review: 1/1" in rep and "[qwen]" in rep and "[claude]" in rep
+
+
+# =============================================================================
+# The standalone agent (chat_providers / tools / verify / session / loop)
+# =============================================================================
+
+def _agent_repo() -> Path:
+    """A tiny scratch repo: calc.py + a test that only passes once mul() is right."""
+    repo = Path(tempfile.mkdtemp())
+    (repo / "calc.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    (repo / "check.py").write_text(
+        "from calc import add, mul\n"
+        "assert add(1, 2) == 3\n"
+        "assert mul(3, 4) == 12\n"
+        "print('ok')\n", encoding="utf-8")
+    return repo
+
+
+def _check_cmd() -> str:
+    """The scratch repo's acceptance command. `-B` is required: the wrong and right
+    calc.py are the SAME byte size, so a cached .pyc written within the same filesystem
+    timestamp tick would be reused and the second run would import stale code."""
+    return f'"{sys.executable}" -B check.py'
+
+
+# --- chat_providers: normalization + text protocol ---------------------------
+def test_chat_tool_call_normalization():
+    # Ollama gives dict args; OpenAI gives a JSON string — both must normalize.
+    assert chat_providers._coerce_args({"path": "a.py"}) == {"path": "a.py"}
+    assert chat_providers._coerce_args('{"path": "a.py"}') == {"path": "a.py"}
+    assert chat_providers._coerce_args("not json") == {"__raw__": "not json"}
+    assert chat_providers._coerce_args(None) == {}
+
+
+def test_text_protocol_parsing():
+    turn = chat_providers.parse_text_action(
+        'I will read it.\n```action\n{"tool": "read_file", "args": {"path": "x.py"}}\n```')
+    assert turn.wants_tools and turn.tool_calls[0].name == "read_file"
+    assert turn.tool_calls[0].args == {"path": "x.py"}
+    assert "I will read it." in turn.content
+    plain = chat_providers.parse_text_action("All done — no more actions needed.")
+    assert not plain.wants_tools and "All done" in plain.content
+
+
+def test_provider_kind_and_chat_support():
+    cfg = {"providers": {"groq": {"kind": "openai-compatible"},
+                         "weird": {"kind": "telepathy"}}}
+    assert chat_providers.supports_chat(cfg, "qwen")     # built-in -> ollama-local
+    assert chat_providers.supports_chat(cfg, "groq")
+    assert not chat_providers.supports_chat(cfg, "weird")
+
+
+# --- tools: safety + behavior ------------------------------------------------
+def test_tools_path_guard_and_edit():
+    repo = _agent_repo()
+    ctx = tools_mod.ToolContext(repo=str(repo), cfg=_CFG)
+    reg = tools_mod.build_tools(ctx)
+
+    # traversal is refused as a normal tool result (not a crash)
+    out = tools_mod.dispatch(reg, "read_file", {"path": "../../etc/passwd"})
+    assert out.startswith("ERROR") and "escape" in out
+
+    assert "def add" in tools_mod.dispatch(reg, "read_file", {"path": "calc.py"})
+    assert "calc.py" in tools_mod.dispatch(reg, "list_files", {})
+    assert "calc.py:1" in tools_mod.dispatch(reg, "search", {"pattern": "def add"})
+
+    # exact-match edit: wrong text fails loudly instead of guessing
+    bad = tools_mod.dispatch(reg, "edit_file",
+                             {"path": "calc.py", "old": "def nope():", "new": "x"})
+    assert bad.startswith("ERROR") and "not found" in bad
+    ok = tools_mod.dispatch(reg, "edit_file",
+                            {"path": "calc.py", "old": "a + b", "new": "a + b  # ok"})
+    assert "Edited" in ok and "# ok" in (repo / "calc.py").read_text()
+
+    # unknown tool / bad args are recoverable messages
+    assert "unknown tool" in tools_mod.dispatch(reg, "nope", {})
+    assert "bad arguments" in tools_mod.dispatch(reg, "read_file", {"bogus": 1})
+
+
+def test_command_policy():
+    cfg = _CFG.get("agent_chat", {})
+    allowed, confirm, _ = tools_mod.command_allowed("pytest -q", cfg)
+    assert allowed and not confirm                      # allowlisted -> runs silently
+    allowed, confirm, _ = tools_mod.command_allowed("echo hello", cfg)
+    assert allowed and confirm                          # unknown -> needs confirmation
+    allowed, _c, why = tools_mod.command_allowed("rm -rf /", cfg)
+    assert not allowed and "denied" in why              # denylisted -> never
+    allowed, _c, _w = tools_mod.command_allowed("git push --force", cfg)
+    assert not allowed
+
+
+def test_run_cmd_respects_refusal():
+    repo = _agent_repo()
+    ctx = tools_mod.ToolContext(repo=str(repo), cfg=_CFG,
+                                confirm=lambda name, detail: False)
+    reg = tools_mod.build_tools(ctx)
+    assert "REFUSED by the user" in tools_mod.dispatch(reg, "run_cmd", {"cmd": "echo hi"})
+    assert "REFUSED" in tools_mod.dispatch(reg, "run_cmd", {"cmd": "rm -rf x"})
+
+
+# --- verify: snapshot / revert / policies ------------------------------------
+def test_verify_reverts_broken_edit():
+    repo = _agent_repo()
+    v = verify_mod.Verifier(str(repo), _CFG, policy="gate")
+    reg = verify_mod.wrap_registry(
+        tools_mod.build_tools(tools_mod.ToolContext(repo=str(repo), cfg=_CFG)), v)
+    before = (repo / "calc.py").read_text(encoding="utf-8")
+
+    tools_mod.dispatch(reg, "write_file",
+                       {"path": "calc.py", "content": "def broken(:\n"})  # syntax error
+    result = v.finish_turn()
+    assert not result.ok and "gate" in result.check
+    assert (repo / "calc.py").read_text(encoding="utf-8") == before   # byte-identical
+    assert "REVERTED" in result.as_tool_note()
+
+
+def test_verify_tests_policy_and_undo():
+    repo = _agent_repo()
+    test_cmd = _check_cmd()
+    v = verify_mod.Verifier(str(repo), _CFG, policy="tests", test_cmd=test_cmd)
+    reg = verify_mod.wrap_registry(
+        tools_mod.build_tools(tools_mod.ToolContext(repo=str(repo), cfg=_CFG)), v)
+
+    # wrong implementation: compiles fine, but the project's own test fails -> revert
+    tools_mod.dispatch(reg, "write_file", {
+        "path": "calc.py", "content": "def add(a, b):\n    return a + b\n"
+                                      "def mul(a, b):\n    return a + b\n"})
+    bad = v.finish_turn()
+    assert not bad.ok and bad.check == "tests" and "calc.py" in bad.reverted
+    assert "def mul" not in (repo / "calc.py").read_text(encoding="utf-8")
+
+    # correct implementation survives, and /undo can still roll it back
+    tools_mod.dispatch(reg, "write_file", {
+        "path": "calc.py", "content": "def add(a, b):\n    return a + b\n"
+                                      "def mul(a, b):\n    return a * b\n"})
+    good = v.finish_turn()
+    assert good.ok and good.check == "tests"
+    assert "def mul" in (repo / "calc.py").read_text(encoding="utf-8")
+    assert v.undo_last() == ["calc.py"]
+    assert "def mul" not in (repo / "calc.py").read_text(encoding="utf-8")
+
+
+def test_verify_tests_degrades_without_test_cmd():
+    # Claiming "test-verified" with no test command would be a lie — degrade to gate.
+    v = verify_mod.Verifier(str(_agent_repo()), _CFG, policy="tests", test_cmd="")
+    assert v.policy == "gate"
+
+
+def test_verify_off_lets_edits_land():
+    repo = _agent_repo()
+    v = verify_mod.Verifier(str(repo), _CFG, policy="off")
+    reg = verify_mod.wrap_registry(
+        tools_mod.build_tools(tools_mod.ToolContext(repo=str(repo), cfg=_CFG)), v)
+    tools_mod.dispatch(reg, "write_file", {"path": "calc.py", "content": "def broken(:\n"})
+    assert v.finish_turn().ok
+    assert (repo / "calc.py").read_text(encoding="utf-8") == "def broken(:\n"
+
+
+# --- session: prompt, compaction, transcripts --------------------------------
+def test_session_prompt_and_compaction():
+    repo = _agent_repo()
+    (repo / ".qwen-pipeline.json").write_text(
+        json.dumps({"conventions": "SNAKE_CASE_RULE"}), encoding="utf-8")
+    cfg = json.loads(json.dumps(_CFG))
+    cfg["agent_chat"]["context_budget_tokens"] = 200      # force compaction
+    cfg["agent_chat"]["compact_keep_recent"] = 4
+    s = session_mod.Session(str(repo), cfg, "qwen", verify_policy="gate")
+    assert "SNAKE_CASE_RULE" in s.messages[0]["content"]   # conventions injected
+    assert "calc.py" in s.messages[0]["content"]           # repo map injected
+
+    s.add_user("FIRST TASK")
+    for i in range(12):
+        s.add_user(f"filler message number {i} " + "x" * 200)
+    assert s.maybe_compact()
+    assert s.messages[0]["role"] == "system"
+    assert s.messages[1]["content"] == "FIRST TASK"        # original intent survives
+    assert "summarized to save context" in s.messages[2]["content"]
+    assert len(s.messages) < 16
+    assert s.messages[-1]["role"] != "tool"                # no orphaned tool result
+
+
+def test_session_save_and_load(monkeypatch=None):
+    home = Path(tempfile.mkdtemp())
+    old_root = session_mod.paths.ROOT
+    session_mod.paths.ROOT = home
+    try:
+        s = session_mod.Session(str(_agent_repo()), _CFG, "qwen", verify_policy="off")
+        s.add_user("do a thing")
+        p = s.save()
+        assert p.exists()
+        loaded = session_mod.Session.load(s.id, _CFG)
+        assert loaded.id == s.id and loaded.messages[-1]["content"] == "do a thing"
+        assert any(r["id"] == s.id for r in session_mod.Session.list_recent())
+    finally:
+        session_mod.paths.ROOT = old_root
+
+
+# --- loop: the agent end-to-end with a scripted model ------------------------
+class _ScriptedModel:
+    """Stands in for a provider: replays a list of AssistantTurns."""
+
+    def __init__(self, turns):
+        self.turns = list(turns)
+        self.seen_messages = []
+
+    def __call__(self, messages, tools, cfg, provider, model="", usage=None):
+        self.seen_messages.append(list(messages))
+        if usage is not None:
+            usage.update({"tokens_in": 10, "tokens_out": 5, "duration_s": 0.1})
+        return self.turns.pop(0) if self.turns else chat_providers.AssistantTurn(
+            "out of scripted turns")
+
+
+def _run_agent(repo, cfg, turns, policy, test_cmd=""):
+    s = session_mod.Session(str(repo), cfg, "qwen", verify_policy=policy,
+                            test_cmd=test_cmd)
+    v = verify_mod.Verifier(str(repo), cfg, policy, test_cmd)
+    reg = verify_mod.wrap_registry(
+        tools_mod.build_tools(tools_mod.ToolContext(repo=str(repo), cfg=cfg,
+                                                    test_cmd=test_cmd)), v)
+    model = _ScriptedModel(turns)
+    old = loop.chat_providers.chat
+    loop.chat_providers.chat = model
+    try:
+        events = list(loop.run_turn(s, v, reg, "add mul()"))
+    finally:
+        loop.chat_providers.chat = old
+    return s, v, events, model
+
+
+def _turn(*calls, content=""):
+    return chat_providers.AssistantTurn(content, [
+        chat_providers.ToolCall(f"c{i}", name, args)
+        for i, (name, args) in enumerate(calls)])
+
+
+def test_loop_happy_path():
+    repo = _agent_repo()
+    good = ("def add(a, b):\n    return a + b\n"
+            "def mul(a, b):\n    return a * b\n")
+    s, v, events, _m = _run_agent(repo, _CFG, [
+        _turn(("read_file", {"path": "calc.py"})),
+        _turn(("write_file", {"path": "calc.py", "content": good})),
+        _turn(("finish", {"summary": "added mul"})),
+    ], policy="gate")
+    kinds = [e.kind for e in events]
+    assert "verify_passed" in kinds
+    assert "def mul" in (repo / "calc.py").read_text(encoding="utf-8")
+    assert s.usage["turns"] == 3 and s.usage["tokens_out"] == 15
+
+
+def test_loop_reverts_then_model_fixes_it():
+    """The core promise: a bad edit that passes compile but fails the project's tests is
+    reverted, the model sees the real failure, and its second attempt survives."""
+    repo = _agent_repo()
+    test_cmd = _check_cmd()
+    wrong = ("def add(a, b):\n    return a + b\n"
+             "def mul(a, b):\n    return a + b\n")     # compiles, fails the test
+    right = ("def add(a, b):\n    return a + b\n"
+             "def mul(a, b):\n    return a * b\n")
+    s, v, events, model = _run_agent(repo, _CFG, [
+        _turn(("write_file", {"path": "calc.py", "content": wrong})),
+        _turn(("finish", {"summary": "done (wrong)"})),
+        _turn(("write_file", {"path": "calc.py", "content": right})),
+        _turn(("finish", {"summary": "fixed"})),
+    ], policy="tests", test_cmd=test_cmd)
+
+    kinds = [e.kind for e in events]
+    assert "verify_failed" in kinds and kinds[-1] == "verify_passed"
+    assert "def mul(a, b):\n    return a * b" in (repo / "calc.py").read_text()
+    # the model was actually TOLD what failed, verbatim
+    note = [m for m in s.messages if "VERIFICATION FAILED" in (m.get("content") or "")]
+    assert note and "AssertionError" in note[0]["content"]
+
+
+def test_loop_step_cap_stops():
+    repo = _agent_repo()
+    cfg = json.loads(json.dumps(_CFG))
+    cfg["agent_chat"]["max_steps"] = 2
+    # a model that never finishes must still terminate
+    s, v, events, _m = _run_agent(repo, cfg,
+                                  [_turn(("list_files", {})) for _ in range(10)],
+                                  policy="off")
+    assert events[-1].kind == "stopped" and "Step limit" in events[-1].text
+
+
+def test_loop_escalates_after_repeated_failures():
+    repo = _agent_repo()
+    test_cmd = _check_cmd()
+    cfg = json.loads(json.dumps(_CFG))
+    cfg["providers"]["gemini"]["enabled"] = True     # escalation target available
+    cfg["cascade"]["escalate_to"] = "gemini"
+    cfg["agent_chat"]["escalate_after_failed_verifies"] = 1
+    wrong = "def add(a, b):\n    return a + b\ndef mul(a, b):\n    return a + b\n"
+    s, v, events, _m = _run_agent(repo, cfg, [
+        _turn(("write_file", {"path": "calc.py", "content": wrong})),
+        _turn(("finish", {"summary": "nope"})),
+        _turn(("finish", {"summary": "still nope"})),
+    ], policy="tests", test_cmd=test_cmd)
+    assert any(e.kind == "escalated" for e in events)
+    assert s.provider == "gemini"          # the session switched tiers
+
+
+def test_loop_budget_blocks_before_calling_model():
+    repo = _agent_repo()
+    cfg = json.loads(json.dumps(_CFG))
+    cfg["metering"]["budgets"]["qwen_tokens_per_day"] = 1
+    tmp = Path(tempfile.mkdtemp())
+    metering._METRICS_PATH = tmp / "metrics.jsonl"
+    metering.record({"tier": "qwen", "tokens_out": 999}, cfg)
+    s, v, events, model = _run_agent(repo, cfg, [_turn(("list_files", {}))],
+                                     policy="off")
+    assert events[0].kind == "stopped" and "budget" in events[0].text
+    assert not model.seen_messages          # the provider was never called
 
 
 def _run_all():

@@ -18,6 +18,8 @@ corrections/*.jsonl
 outputs/
 # Per-delegation cost/outcome log:
 metrics/
+# Agent chat transcripts (contain your code + prompts):
+sessions/
 
 # ── Large local assets ───────────────────────────────────────────────────────
 # Ollama blob/manifest store (tens of GB):
