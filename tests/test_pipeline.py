@@ -902,6 +902,93 @@ def test_loop_budget_blocks_before_calling_model():
     assert not model.seen_messages          # the provider was never called
 
 
+# --- --json event protocol (what a VS Code / web UI consumes) ----------------
+def test_event_wire_format():
+    e = loop.Event("tool_call", name="read_file", args={"path": "a.py"})
+    assert e.to_dict() == {"type": "tool_call", "tool": "read_file",
+                           "args": {"path": "a.py"}}
+    assert loop.Event("tool_result", "1\tx = 1", name="read_file").to_dict() == {
+        "type": "tool_result", "tool": "read_file", "text": "1\tx = 1"}
+    assert loop.Event("verify_passed", "tests").to_dict() == {
+        "type": "verify_passed", "check": "tests"}
+    fail = loop.Event("verify_failed", "AssertionError", name="tests").to_dict()
+    assert fail == {"type": "verify_failed", "check": "tests", "text": "AssertionError"}
+    assert loop.Event("text", "hello").to_dict() == {"type": "text", "text": "hello"}
+
+
+def test_json_mode_headless_stream():
+    """A frontend must get parseable JSON lines: session_start ... session_end."""
+    import io
+    import contextlib
+    import chat_ui
+
+    repo = _agent_repo()
+    right = ("def add(a, b):\n    return a + b\n"
+             "def mul(a, b):\n    return a * b\n")
+    turns = [_turn(("write_file", {"path": "calc.py", "content": right})),
+             _turn(("finish", {"summary": "added mul"}))]
+    model = _ScriptedModel(turns)
+    old = loop.chat_providers.chat
+    loop.chat_providers.chat = model
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            rc = chat_ui.run_headless(str(repo), _CFG, "add mul", _check_cmd(),
+                                      "qwen", verify="gate", json_mode=True)
+    finally:
+        loop.chat_providers.chat = old
+
+    events = [json.loads(ln) for ln in buf.getvalue().splitlines() if ln.strip()]
+    kinds = [e["type"] for e in events]
+    assert rc == 0
+    assert kinds[0] == "session_start" and kinds[-1] == "session_end"
+    assert "tool_call" in kinds and "verify_passed" in kinds
+    assert all("ts" in e for e in events)              # every event is timestamped
+    start = events[0]
+    assert start["provider"] == "qwen" and start["mode"] == "headless"
+    end = events[-1]
+    assert end["done_passed"] is True and end["files_changed"] == ["calc.py"]
+    assert end["usage"]["turns"] == 2
+
+
+def test_json_mode_confirm_protocol():
+    """In --json mode a shell command asks over the wire and fails safe on EOF."""
+    import io
+    import contextlib
+    import chat_ui
+
+    confirm = chat_ui._confirmer(auto_yes=False, json_mode=True)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf), _stdin('{"allow": true}\n'):
+        allowed = confirm("run_cmd", "echo hi")
+    req = [json.loads(ln) for ln in buf.getvalue().splitlines() if ln.strip()]
+    assert allowed is True
+    assert req[0]["type"] == "confirm_request" and req[0]["detail"] == "echo hi"
+
+    with contextlib.redirect_stdout(io.StringIO()):
+        with _stdin(""):                       # EOF -> refuse (fail safe)
+            assert confirm("run_cmd", "echo hi") is False
+        with _stdin("y\n"):                    # plain answers still work
+            assert confirm("run_cmd", "echo hi") is True
+
+
+class _stdin:
+    """Minimal stdin redirector (contextlib has no redirect_stdin)."""
+
+    def __init__(self, text: str):
+        self.text = text
+
+    def __enter__(self):
+        import io
+        self._old = sys.stdin
+        sys.stdin = io.StringIO(self.text)
+        return self
+
+    def __exit__(self, *exc):
+        sys.stdin = self._old
+        return False
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

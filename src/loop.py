@@ -32,12 +32,30 @@ except ImportError:
 
 @dataclass
 class Event:
-    """Something the UI may want to show. `kind` is one of:
-    text, tool_call, tool_result, verify_failed, verify_passed, escalated, stopped."""
+    """Something a UI may want to show. `kind` is one of:
+    text, tool_call, tool_result, verify_failed, verify_passed, escalated, stopped.
+
+    `to_dict()` is the WIRE FORMAT for `--json` mode — a stable protocol any frontend
+    (VS Code extension, web UI, CI script) can consume. Keep it additive: add fields,
+    never rename or repurpose existing ones.
+    """
     kind: str
     text: str = ""
     name: str = ""
     args: dict[str, Any] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"type": self.kind}
+        if self.kind in ("tool_call", "tool_result"):
+            out["tool"] = self.name
+        elif self.kind in ("verify_failed", "verify_passed"):
+            # verify_passed carries the check in `text`; verify_failed in `name`.
+            out["check"] = self.name or self.text
+        if self.args is not None:
+            out["args"] = self.args
+        if self.text and not (self.kind == "verify_passed"):
+            out["text"] = self.text
+        return out
 
 
 def _record_usage(session, usage: dict[str, Any], provider: str, model: str) -> None:

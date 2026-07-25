@@ -181,7 +181,8 @@ verbatim failure goes back to the model to fix:
 `--verify off | gate | tests` picks how strict that is; `/undo`, `/provider`, `/cost` and
 friends work mid-session; a model that keeps failing escalates to a stronger tier
 automatically. Shell commands are allowlist/denylist-checked and prompt before running.
-Full guide: **[docs/AGENT.md](docs/AGENT.md)**.
+Add **`--json`** to stream JSON-lines events instead of text — the integration surface for a
+VS Code extension, a web UI, or CI. Full guide: **[docs/AGENT.md](docs/AGENT.md)**.
 
 ---
 

@@ -29,6 +29,12 @@ searches, edits, and runs commands in a repo.
   token/USD budgets.
 - **Long sessions** — automatic context compaction keeps the original request and recent
   turns verbatim and digests the middle.
+- **`--json` event protocol** — `chat`/`run` can emit JSON-lines events
+  (`session_start`, `tool_call`, `tool_result`, `verify_passed`/`verify_failed`,
+  `escalated`, `stopped`, `session_end`, …) instead of human output, so a VS Code
+  extension, web UI, or CI script integrates against a stable schema instead of parsing
+  text. Command approvals work over the wire too (`confirm_request` → one stdin line;
+  EOF fails safe). Schema documented in docs/AGENT.md.
 - New modules: `chat_providers.py` (multi-turn + tool calls normalized across
   ollama-local / openai-compatible / vertex-ai, plus a **text-protocol fallback** for models
   without native tool support), `tools.py`, `verify.py`, `session.py`, `loop.py`,

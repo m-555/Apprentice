@@ -114,6 +114,53 @@ The conversation is compacted automatically when it exceeds
 verbatim, and the middle is replaced by a short digest. Transcripts live in
 `<data home>/sessions/` and can be resumed with `--resume <id>`.
 
+## `--json`: the event protocol (for UIs and CI)
+
+`apprentice chat --json` / `apprentice run --json` replace the human output with
+**JSON-lines events** — one object per line, flushed immediately. This is the integration
+surface for a VS Code extension, a web UI, or a CI script; you never have to parse the
+pretty output.
+
+```bash
+apprentice run "add mul(a,b) to calc.py" --done-when "pytest -q" --json
+```
+```json
+{"ts":"…","type":"session_start","session_id":"bab410d4","repo":"…","provider":"qwen","verify":"gate","mode":"headless","task":"…","done_when":"…"}
+{"ts":"…","type":"tool_call","tool":"read_file","args":{"path":"calc.py"}}
+{"ts":"…","type":"tool_result","tool":"read_file","text":"1\t\"\"\"Small helpers.\"\"\"…"}
+{"ts":"…","type":"verify_passed","check":"tests"}
+{"ts":"…","type":"session_end","session_id":"bab410d4","files_changed":["calc.py"],"usage":{…},"done_passed":true,"rounds":1}
+```
+
+| `type` | Meaning | Key fields |
+|---|---|---|
+| `session_start` | run began | `session_id`, `repo`, `provider`, `model`, `verify`, `test_cmd` (+ `mode`/`task`/`done_when` headless, `resumed` in chat) |
+| `user` | your message (chat) | `text` |
+| `text` | assistant prose | `text` |
+| `tool_call` | agent is calling a tool | `tool`, `args` |
+| `tool_result` | what the tool returned | `tool`, `text` |
+| `verify_passed` / `verify_failed` | verdict for the turn | `check` (`gate:…`/`tests`), `text` = verbatim failure |
+| `escalated` | switched to a stronger tier | `text` |
+| `confirm_request` | a shell command needs approval | `tool`, `detail` |
+| `confirm_auto` | approved automatically (`--yes`) | `tool`, `detail` |
+| `ack` | answer to a slash command | `command`, plus e.g. `usage`, `reverted` |
+| `turn_end` | one chat turn finished | `usage` |
+| `stopped` | cap hit / provider error / interrupt | `text` |
+| `session_end` | run finished | `files_changed`, `usage`, `transcript` (+ `done_passed`, `rounds` headless) |
+| `error` | startup refusal (bad provider, dirty tree) | `text` |
+
+Every event carries `ts` (UTC ISO-8601) and `type`. The schema is **additive** — new
+fields may appear, existing ones won't be renamed.
+
+**Approvals over the wire.** In `--json` mode there's no prompt to show, so when a
+non-allowlisted command comes up the agent emits `confirm_request` and reads **one line
+from stdin**: `{"allow": true}` (or plain `y`). EOF or anything else = refused, so an
+unattended frontend fails safe. Pass `--yes` to skip approvals entirely (you get
+`confirm_auto` events instead).
+
+**Input in chat mode** is still plain text lines (one message per line), so you can pipe
+into it; only the output changes.
+
 ## Honest limits
 
 - **The model is the ceiling.** A local 7B–80B is genuinely weaker than a frontier model at

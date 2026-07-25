@@ -20,6 +20,7 @@ Agent options (chat/run):
   --yes              don't prompt before non-allowlisted shell commands
   --allow-dirty      allow an uncommitted/non-git working tree
   --resume ID        continue a saved chat session
+  --json             emit JSON-lines events instead of human output (for UIs / CI)
   --done-when CMD    (run only) the acceptance command that must exit 0
 
 Non-interactive by design: `init` is idempotent and prints what it did/found, so it
@@ -171,6 +172,8 @@ def _agent_parser(prog: str, headless: bool) -> "argparse.ArgumentParser":
     p.add_argument("--test-cmd", dest="test_cmd", default="")
     p.add_argument("--yes", action="store_true")
     p.add_argument("--allow-dirty", dest="allow_dirty", action="store_true")
+    p.add_argument("--json", dest="json_mode", action="store_true",
+                   help="emit JSON-lines events instead of human output (for UIs/CI)")
     if not headless:
         p.add_argument("--resume", default="")
     return p
@@ -185,7 +188,8 @@ def cmd_chat(argv: list[str]) -> int:
     cfg = paths.load_config()
     provider = args.provider or cfg.get("providers", {}).get("default", "qwen")
     return chat_ui.chat(args.repo, cfg, provider, args.model, args.verify,
-                        args.test_cmd, args.yes, args.allow_dirty, args.resume)
+                        args.test_cmd, args.yes, args.allow_dirty, args.resume,
+                        args.json_mode)
 
 
 def cmd_run(argv: list[str]) -> int:
@@ -197,7 +201,7 @@ def cmd_run(argv: list[str]) -> int:
     cfg = paths.load_config()
     provider = args.provider or cfg.get("providers", {}).get("default", "qwen")
     return chat_ui.run_headless(args.repo, cfg, args.task, args.done_when, provider,
-                                args.model, args.verify, args.test_cmd)
+                                args.model, args.verify, args.test_cmd, args.json_mode)
 
 
 def cmd_sessions() -> int:
