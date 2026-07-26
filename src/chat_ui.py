@@ -28,6 +28,7 @@ except ImportError:
 HELP = """Commands:
   /undo               revert the agent's last completed turn
   /verify off|gate|tests   change the verification policy
+  /plan [off]         plan-then-approve before the agent may edit anything
   /provider <name>    switch model provider (e.g. qwen, gemini)  [/model <tier>]
   /cost               tokens + estimated spend for this session
   /files              files changed so far this session
@@ -157,6 +158,44 @@ def _confirmer(auto_yes: bool, json_mode: bool = False):
     return confirm
 
 
+PLAN_INSTRUCTION = (
+    "PLAN FIRST — do not edit anything yet (your editing tools are disabled for this "
+    "turn). Investigate with read_file/search/list_files, then reply with a short, "
+    "concrete plan: which files you will change and what each change does. Number the "
+    "steps. Do not write code in the plan.\n\n--- THE REQUEST ---\n")
+
+EXECUTE_INSTRUCTION = (
+    "The plan is approved. Carry it out now, exactly as described. Re-read any file "
+    "before you edit it, then run the tests.")
+
+
+def _asker(auto_yes: bool, json_mode: bool):
+    """Yes/no question for decisions that cost money or change how the run behaves
+    (currently: climbing the escalation ladder, approving a plan).
+
+    Same wire protocol as tool approval — a JSON frontend gets an event and answers with
+    one stdin line — so a UI only has to implement one pattern.
+    """
+    def ask(question: str, detail: str = "") -> bool:
+        if auto_yes:
+            return True
+        if json_mode:
+            emit({"type": "ask", "question": question, "detail": detail})
+        else:
+            _out(f"\n  [ASK] {question}")
+        try:
+            answer = input("" if json_mode else "  Proceed? [y/N] ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return False
+        if json_mode and answer.startswith("{"):
+            try:
+                return bool(json.loads(answer).get("allow", False))
+            except json.JSONDecodeError:
+                return False
+        return answer.lower() in ("y", "yes", "true")
+    return ask
+
+
 def _render(ev: loop.Event) -> None:
     if ev.kind == "text":
         _out(f"\n{ev.text}")
@@ -178,6 +217,10 @@ def _render(ev: loop.Event) -> None:
         _out(f"\n  [OK] verified ({ev.text})")
     elif ev.kind == "escalated":
         _out(f"\n  [ESCALATED] {ev.text}")
+    elif ev.kind == "escalation_offer":
+        _out(f"\n  [ESCALATE?] {ev.text}")
+    elif ev.kind == "nudge":
+        _out(f"  [NUDGE] {ev.text} - told the model to change approach")
     elif ev.kind == "stopped":
         _out(f"\n  [STOPPED] {ev.text}")
 
@@ -207,7 +250,8 @@ def _session_end_event(sess, verifier, extra: dict[str, Any] | None = None
 
 def chat(repo: str, cfg: dict[str, Any], provider: str, model: str = "",
          verify: str = "", test_cmd: str = "", auto_yes: bool = False,
-         allow_dirty: bool = False, resume: str = "", json_mode: bool = False) -> int:
+         allow_dirty: bool = False, resume: str = "", json_mode: bool = False,
+         plan_mode: bool = False) -> int:
     repo = str(Path(repo).resolve())
     chat_cfg = cfg.get("agent_chat", {})
 
@@ -244,6 +288,8 @@ def chat(repo: str, cfg: dict[str, Any], provider: str, model: str = "",
     verifier, registry = _make_runtime(sess, cfg, auto_yes, json_mode)
     render, on_delta = _make_renderers(
         json_mode, bool(chat_cfg.get("stream", True)))
+    ask = _asker(auto_yes, json_mode)
+    ro_registry = tools_mod.readonly(registry)
 
     if json_mode:
         emit({**_session_start_event(sess, verifier), "resumed": bool(resume)})
@@ -294,6 +340,10 @@ def chat(repo: str, cfg: dict[str, Any], provider: str, model: str = "",
                 else:
                     reply(f"  usage: /verify {'|'.join(verify_mod.POLICIES)}",
                           error=f"unknown policy {arg!r}")
+            elif cmd == "plan":
+                plan_mode = arg.lower() not in ("off", "false", "0")
+                reply(f"  plan mode = {'on' if plan_mode else 'off'}",
+                      plan=plan_mode)
             elif cmd == "provider":
                 if chat_providers.supports_chat(cfg, arg):
                     sess.provider, sess.model = arg, ""
@@ -323,7 +373,17 @@ def chat(repo: str, cfg: dict[str, Any], provider: str, model: str = "",
         if json_mode:
             emit({"type": "user", "text": line})
         try:
-            for ev in loop.run_turn(sess, verifier, registry, line, on_delta):
+            if plan_mode:
+                # Phase 1: investigate and propose, with editing tools REMOVED.
+                for ev in loop.run_turn(sess, verifier, ro_registry,
+                                        PLAN_INSTRUCTION + line, on_delta, ask):
+                    render(ev)
+                if not ask("Execute this plan?", ""):
+                    render(loop.Event("stopped", "Plan not executed."))
+                    sess.save()
+                    continue
+                line = EXECUTE_INSTRUCTION
+            for ev in loop.run_turn(sess, verifier, registry, line, on_delta, ask):
                 render(ev)
         except KeyboardInterrupt:
             render(loop.Event("stopped", "interrupted"))
@@ -369,7 +429,7 @@ def run_headless(repo: str, cfg: dict[str, Any], task: str, done_when: str,
              f"done_when={done_when}")
 
     result = loop.run_headless(sess, verifier, registry, task, done_when, render,
-                               on_delta)
+                               on_delta, _asker(True, json_mode))
     sess.save()
 
     if json_mode:

@@ -6,6 +6,30 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added — making a weak model behave (plan mode, thrash guard, cost ladder, memory)
+Four changes aimed squarely at how *small local models* fail, rather than at raw ability.
+
+- **Plan mode** (`apprentice chat --plan`, `/plan`): the agent investigates with its
+  editing tools **removed from the toolset**, proposes a numbered plan, and only gets
+  write access after you approve. Structural, not a prompt instruction it can ignore.
+- **Thrash detection**: re-issuing the same tool call with the same arguments
+  `agent_chat.repeat_limit` times (default 3) appends a warning to the tool result telling
+  the model to change approach. Motivated by a real run where the local model burned 40
+  turns repeating one command.
+- **Cost-ordered escalation ladder** (`cascade.ladder`): local (free) → cheap cloud tier →
+  strong cloud tier, climbing one rung per repeated verification failure, skipping any rung
+  whose provider is disabled or over budget. Because cloud tiers cost money the user is
+  **asked before each climb** (`escalation_offer`); `agent_chat.auto_escalate` skips the
+  prompt and headless runs always auto-approve.
+- **The agent now uses the corrections store**: retrieval was previously wired only into
+  `delegate`, so the agent kept repeating mistakes the project had already recorded. Each
+  turn now prepends the most similar past lessons (`agent_chat.use_corrections`).
+
+### Added — beginner walkthrough
+- **docs/TRY_IT.md**: a step-by-step first session on a toy project using only the free
+  local model — setup, first chat, watching a bad change get reverted, plan mode, the
+  slash commands, headless mode, and the VS Code panel.
+
 ### Added — VS Code extension (`vscode-extension/`)
 A frontend for the agent, packaged as a `.vsix`. It contains **no agent logic**: it spawns
 `apprentice … --json` and renders the event stream.

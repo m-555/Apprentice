@@ -114,6 +114,22 @@ test("streamed deltas arrive in order before the complete text", async () => {
   assert.ok(events.indexOf(full) > events.findIndex((e) => e.type === "text_delta"));
 });
 
+test("escalation offers are answered on the same channel as approvals", async () => {
+  // A stuck agent asks to move to a paid tier; the UI answers with one stdin line.
+  const { agent, events, done } = collect();
+  await until(events, "session_start");
+  agent.send("i am stuck");
+  const nudge = await until(events, "nudge");
+  assert.match(nudge.text, /repeated/);
+  const offer = await until(events, "escalation_offer");
+  assert.match(offer.text, /gemini\/flash/);
+
+  agent.answerConfirm(true);
+  await until(events, "turn_end");
+  agent.end();
+  await done;
+});
+
 test("stop() terminates a running agent", async () => {
   const { agent, events, done } = collect();
   await until(events, "session_start");

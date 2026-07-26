@@ -15,7 +15,10 @@
     "quantization": "Q4_K_M",
     "disk_size_gb": 51,
     "context_length_native": 262144,
-    "capabilities": ["completion", "tools"],
+    "capabilities": [
+      "completion",
+      "tools"
+    ],
     "license": "Apache-2.0",
     "requires_ollama": ">=0.15.5"
   },
@@ -47,13 +50,13 @@
     "note": "Cold load is a one-time cost per model load; keep_alive keeps it warm. Warm throughput ~50-58 tok/s on small generations."
   },
   "providers": {
-    "_comment": "Workers the orchestrator can delegate to via delegate(provider=...). Built-ins: qwen/gemini/openai. ADD YOUR OWN WITHOUT CODE: any entry here with a known `kind` becomes a valid provider name — kinds: ollama-local (local Ollama), openai-compatible (OpenAI, Groq, OpenRouter, Mistral, LM Studio, vLLM, llama.cpp server — set base_url/model/api_key_env), vertex-ai (Google Vertex). API keys NEVER go in config: name the env var in api_key_env. Optional per-provider `cost` (usd_per_mtok_in/out, flat or per model-tier) powers $ metering + usd budgets.",
+    "_comment": "Workers the orchestrator can delegate to via delegate(provider=...). Built-ins: qwen/gemini/openai. ADD YOUR OWN WITHOUT CODE: any entry here with a known `kind` becomes a valid provider name \u2014 kinds: ollama-local (local Ollama), openai-compatible (OpenAI, Groq, OpenRouter, Mistral, LM Studio, vLLM, llama.cpp server \u2014 set base_url/model/api_key_env), vertex-ai (Google Vertex). API keys NEVER go in config: name the env var in api_key_env. Optional per-provider `cost` (usd_per_mtok_in/out, flat or per model-tier) powers $ metering + usd budgets.",
     "default": "qwen",
     "qwen": {
       "enabled": true,
       "kind": "ollama-local",
       "options": {
-        "_note": "Passed per-request to Ollama (keys starting with _ are stripped). LOW temperature is deliberate: implement-to-spec codegen wants determinism — fewer gate failures/retries. Do NOT add num_ctx here casually (KV cache grows with context; see offload.vram_tight_policy).",
+        "_note": "Passed per-request to Ollama (keys starting with _ are stripped). LOW temperature is deliberate: implement-to-spec codegen wants determinism \u2014 fewer gate failures/retries. Do NOT add num_ctx here casually (KV cache grows with context; see offload.vram_tight_policy).",
         "temperature": 0.15,
         "top_p": 0.9
       },
@@ -76,12 +79,18 @@
         "temperature": 0.2
       },
       "cost": {
-        "_note": "Per model-tier prices in USD per MILLION tokens — set YOUR real Vertex prices in qwen.local.json (they change; 0 = unpriced, no $ metering). Powers est_cost_usd in metrics + the report, and metering.budgets.gemini_usd_per_day.",
-        "flash": {"usd_per_mtok_in": 0, "usd_per_mtok_out": 0},
-        "pro": {"usd_per_mtok_in": 0, "usd_per_mtok_out": 0}
+        "_note": "Per model-tier prices in USD per MILLION tokens \u2014 set YOUR real Vertex prices in qwen.local.json (they change; 0 = unpriced, no $ metering). Powers est_cost_usd in metrics + the report, and metering.budgets.gemini_usd_per_day.",
+        "flash": {
+          "usd_per_mtok_in": 0,
+          "usd_per_mtok_out": 0
+        },
+        "pro": {
+          "usd_per_mtok_in": 0,
+          "usd_per_mtok_out": 0
+        }
       },
       "timeout_s": 120,
-      "_note": "Two-tier Vertex worker (used by the `delegate` tool via google-genai). DO NOT put secrets/project/model-ids here — this file is committed. Set project, credentials_file (your Vertex service-account JSON), models.flash/pro (bare Vertex ids, e.g. gemini-2.5-pro), and enabled=true in config/qwen.local.json (gitignored). Copy config/qwen.local.example.json. The delegate/assign `model` arg picks 'flash' (routine) or 'pro' (hard) per task; empty = default_model."
+      "_note": "Two-tier Vertex worker (used by the `delegate` tool via google-genai). DO NOT put secrets/project/model-ids here \u2014 this file is committed. Set project, credentials_file (your Vertex service-account JSON), models.flash/pro (bare Vertex ids, e.g. gemini-2.5-pro), and enabled=true in config/qwen.local.json (gitignored). Copy config/qwen.local.example.json. The delegate/assign `model` arg picks 'flash' (routine) or 'pro' (hard) per task; empty = default_model."
     },
     "openai": {
       "enabled": false,
@@ -97,11 +106,11 @@
         "temperature": 0.2
       },
       "cost": {},
-      "_note": "GPT/Codex via the OpenAI API. Set model (e.g. gpt-5.2-codex) — or a models tier map like gemini's — export OPENAI_API_KEY, then enabled=true in qwen.local.json. The same kind works for ANY OpenAI-compatible endpoint (Groq/OpenRouter/LM Studio/vLLM): copy this block under a new provider name and change base_url/api_key_env/model."
+      "_note": "GPT/Codex via the OpenAI API. Set model (e.g. gpt-5.2-codex) \u2014 or a models tier map like gemini's \u2014 export OPENAI_API_KEY, then enabled=true in qwen.local.json. The same kind works for ANY OpenAI-compatible endpoint (Groq/OpenRouter/LM Studio/vLLM): copy this block under a new provider name and change base_url/api_key_env/model."
     }
   },
   "delegate": {
-    "_comment": "Wave-2 token-cheap delegate options. context_max_*: caps for server-side context_files fetch. test_timeout_s: cap for the apply_to+test_cmd acceptance run. return_mode: default when the caller doesn't pass one ('full' returns code; 'summary' returns only the status footer — the code is on disk + in the output store).",
+    "_comment": "Wave-2 token-cheap delegate options. context_max_*: caps for server-side context_files fetch. test_timeout_s: cap for the apply_to+test_cmd acceptance run. return_mode: default when the caller doesn't pass one ('full' returns code; 'summary' returns only the status footer \u2014 the code is on disk + in the output store).",
     "context_max_file_kb": 48,
     "context_max_total_kb": 192,
     "test_timeout_s": 300,
@@ -116,41 +125,65 @@
     "mistake_vs_correct_mix": 0.7
   },
   "gate": {
-    "_comment": "§6.1 mechanical gate + worker->worker auto-retry. Runs entirely in-pipeline (no Claude tokens): checks a worker's output, and on failure bounces the verbatim error back to the worker up to max_retries times. Python is reliable in isolation; TS is off by default (snippets miss imports); C++ (UE) is deferred to the §9 host-harness (full builds too slow per-task).",
+    "_comment": "\u00a76.1 mechanical gate + worker->worker auto-retry. Runs entirely in-pipeline (no Claude tokens): checks a worker's output, and on failure bounces the verbatim error back to the worker up to max_retries times. Python is reliable in isolation; TS is off by default (snippets miss imports); C++ (UE) is deferred to the \u00a79 host-harness (full builds too slow per-task).",
     "enabled": true,
     "max_retries": 2,
     "languages": {
       "python": {
         "enabled": true,
-        "checks": ["py_compile"],
+        "checks": [
+          "py_compile"
+        ],
         "timeout_s": 60,
         "_note": "Add \"ruff\" to checks to also lint (only fails if ruff is installed in the venv)."
       },
       "typescript": {
         "enabled": true,
-        "checks": ["tsc"],
-        "tsc_cmd": ["node", "node_modules/typescript/bin/tsc", "--noEmit", "--strict", "--skipLibCheck", "--target", "ES2020"],
+        "checks": [
+          "tsc"
+        ],
+        "tsc_cmd": [
+          "node",
+          "node_modules/typescript/bin/tsc",
+          "--noEmit",
+          "--strict",
+          "--skipLibCheck",
+          "--target",
+          "ES2020"
+        ],
         "timeout_s": 120,
-        "_note": "ON for SELF-CONTAINED TS (pinned typescript in package.json; invoked via `node`). `tsc --noEmit --strict` type-checks a standalone snippet in ms-to-seconds and catches real type errors. `--target ES2020` is REQUIRED: without it tsc defaults to ES5 and falsely rejects modern APIs (Number.isFinite, Math.trunc, Object.entries, optional chaining, …) that real projects use — set this to match your project's tsconfig `target`. The path is relative to the repo root; set an absolute path in config/qwen.local.json if the server's working directory differs. LIMITATION: a snippet that imports from a specific PROJECT won't resolve those imports → use `assign(...)` for project-coupled TS (its `done_when` is the project's OWN typecheck)."
+        "_note": "ON for SELF-CONTAINED TS (pinned typescript in package.json; invoked via `node`). `tsc --noEmit --strict` type-checks a standalone snippet in ms-to-seconds and catches real type errors. `--target ES2020` is REQUIRED: without it tsc defaults to ES5 and falsely rejects modern APIs (Number.isFinite, Math.trunc, Object.entries, optional chaining, \u2026) that real projects use \u2014 set this to match your project's tsconfig `target`. The path is relative to the repo root; set an absolute path in config/qwen.local.json if the server's working directory differs. LIMITATION: a snippet that imports from a specific PROJECT won't resolve those imports \u2192 use `assign(...)` for project-coupled TS (its `done_when` is the project's OWN typecheck)."
       },
       "cpp": {
         "enabled": true,
         "check": "heuristic-lint",
         "timeout_s": 10,
         "banned_patterns": [
-          {"pattern": "FMath::Rand\\s*\\(", "category": "security", "message": "FMath::Rand() is a non-crypto PRNG (weak low bits). For security-sensitive values (tokens/keys) use FGuid::NewGuid() or a CSPRNG."},
-          {"pattern": "\\b(TODO|FIXME)\\b|not\\s+implemented|/\\*\\s*\\.\\.\\.\\s*\\*/|//\\s*\\.\\.\\.", "category": "edge_case", "message": "Placeholder / incomplete body — the snippet looks unfinished."},
-          {"pattern": "#\\s*include\\s*[<\"](openssl|curl/|boost/)", "category": "api_misuse", "message": "New third-party dependency include — UE plugin must add NO new third-party deps; use engine APIs."}
+          {
+            "pattern": "FMath::Rand\\s*\\(",
+            "category": "security",
+            "message": "FMath::Rand() is a non-crypto PRNG (weak low bits). For security-sensitive values (tokens/keys) use FGuid::NewGuid() or a CSPRNG."
+          },
+          {
+            "pattern": "\\b(TODO|FIXME)\\b|not\\s+implemented|/\\*\\s*\\.\\.\\.\\s*\\*/|//\\s*\\.\\.\\.",
+            "category": "edge_case",
+            "message": "Placeholder / incomplete body \u2014 the snippet looks unfinished."
+          },
+          {
+            "pattern": "#\\s*include\\s*[<\"](openssl|curl/|boost/)",
+            "category": "api_misuse",
+            "message": "New third-party dependency include \u2014 UE plugin must add NO new third-party deps; use engine APIs."
+          }
         ],
-        "_note": "ON as a FAST (ms) heuristic lint ONLY — brace/paren balance (comment/string-aware), leaked-fence, and banned-pattern checks. It does NOT compile or type-check: an isolated C++ fragment can't resolve project/engine headers, and a full native build is too slow per-delegate. REAL C++ verification stays on the batched host-harness (see host_harness config) + the orchestrator's own review. banned_patterns is tunable — grow it from recurring corrections."
+        "_note": "ON as a FAST (ms) heuristic lint ONLY \u2014 brace/paren balance (comment/string-aware), leaked-fence, and banned-pattern checks. It does NOT compile or type-check: an isolated C++ fragment can't resolve project/engine headers, and a full native build is too slow per-delegate. REAL C++ verification stays on the batched host-harness (see host_harness config) + the orchestrator's own review. banned_patterns is tunable \u2014 grow it from recurring corrections."
       }
     }
   },
   "metering": {
-    "_comment": "§6.5 per-delegation cost/outcome log -> metrics/metrics.jsonl (local, git-ignored). Report: `python src/metering.py [N]`. Claude token counts aren't visible to the pipeline; the tracked signal is machine-verified %% up and Claude step-ins down.",
+    "_comment": "\u00a76.5 per-delegation cost/outcome log -> metrics/metrics.jsonl (local, git-ignored). Report: `python src/metering.py [N]`. Claude token counts aren't visible to the pipeline; the tracked signal is machine-verified %% up and Claude step-ins down.",
     "enabled": true,
     "budgets": {
-      "_note": "Per-provider daily ceilings since UTC midnight, from metrics.jsonl. 0 = no cap. ENFORCED: delegate/assign refuse a provider that is over budget (clear error → route to a local/free provider instead), and the §6.4 cascade skips escalating to an over-budget tier. Two styles per provider: <name>_tokens_per_day (tokens_out) and <name>_usd_per_day (needs providers.<name>.cost prices). Set real values in qwen.local.json once cloud spend matters.",
+      "_note": "Per-provider daily ceilings since UTC midnight, from metrics.jsonl. 0 = no cap. ENFORCED: delegate/assign refuse a provider that is over budget (clear error \u2192 route to a local/free provider instead), and the \u00a76.4 cascade skips escalating to an over-budget tier. Two styles per provider: <name>_tokens_per_day (tokens_out) and <name>_usd_per_day (needs providers.<name>.cost prices). Set real values in qwen.local.json once cloud spend matters.",
       "gemini_tokens_per_day": 0,
       "gemini_usd_per_day": 0,
       "openai_tokens_per_day": 0,
@@ -166,17 +199,25 @@
     "aider_timeout_s": 600,
     "done_timeout_s": 900,
     "models": {
-      "qwen": {"model": "ollama_chat/qwen3-coder-next:latest", "env": {"OLLAMA_API_BASE": "http://127.0.0.1:11434"}},
+      "qwen": {
+        "model": "ollama_chat/qwen3-coder-next:latest",
+        "env": {
+          "OLLAMA_API_BASE": "http://127.0.0.1:11434"
+        }
+      },
       "gemini": {
         "default_model": "flash",
-        "models": {"flash": "", "pro": ""},
+        "models": {
+          "flash": "",
+          "pro": ""
+        },
         "env": {},
-        "_note": "Used by the `assign` tool (Aider/litellm). model ids MUST use litellm's `vertex_ai/` prefix (service-account/ADC), e.g. `vertex_ai/gemini-2.5-pro` — NOT `gemini/` (that is the AI-Studio API-key path and ignores the service account). Fill models.flash/pro in config/qwen.local.json; the server injects GOOGLE_APPLICATION_CREDENTIALS/VERTEXAI_PROJECT/VERTEXAI_LOCATION into env at call time from providers.gemini."
+        "_note": "Used by the `assign` tool (Aider/litellm). model ids MUST use litellm's `vertex_ai/` prefix (service-account/ADC), e.g. `vertex_ai/gemini-2.5-pro` \u2014 NOT `gemini/` (that is the AI-Studio API-key path and ignores the service account). Fill models.flash/pro in config/qwen.local.json; the server injects GOOGLE_APPLICATION_CREDENTIALS/VERTEXAI_PROJECT/VERTEXAI_LOCATION into env at call time from providers.gemini."
       }
     }
   },
   "host_harness": {
-    "_comment": "OPTIONAL, PROJECT-SPECIFIC batched build/test verify (NOT per-delegate). `python src/host_verify.py [--tests]` builds a host project and optionally runs its tests headless — a heavier 'Tier-2' check to run after a batch of native work / before commit. The example below is an Unreal Engine host project; set your real engine + project paths in config/qwen.local.json (gitignored) so this committed file stays portable. Leave empty to disable.",
+    "_comment": "OPTIONAL, PROJECT-SPECIFIC batched build/test verify (NOT per-delegate). `python src/host_verify.py [--tests]` builds a host project and optionally runs its tests headless \u2014 a heavier 'Tier-2' check to run after a batch of native work / before commit. The example below is an Unreal Engine host project; set your real engine + project paths in config/qwen.local.json (gitignored) so this committed file stays portable. Leave empty to disable.",
     "engine_build_bat": "",
     "editor_cmd": "",
     "project": "",
@@ -188,7 +229,7 @@
     "test_timeout_s": 900
   },
   "agent_chat": {
-    "_comment": "The standalone coding agent (`apprentice chat` / `apprentice run`) — a conversational loop with file/search/edit/run tools, driven by ANY single provider (local or cloud). `verify` is the differentiator: after each turn the agent's changes are checked and REVERTED if they fail, with the verbatim error fed back to the model. off = plain agent (edits land immediately); gate = each edited file must pass the mechanical compile/lint gate; tests = gate + the project's own test command (degrades to gate if no test command is configured).",
+    "_comment": "The standalone coding agent (`apprentice chat` / `apprentice run`) \u2014 a conversational loop with file/search/edit/run tools, driven by ANY single provider (local or cloud). `verify` is the differentiator: after each turn the agent's changes are checked and REVERTED if they fail, with the verbatim error fed back to the model. off = plain agent (edits land immediately); gate = each edited file must pass the mechanical compile/lint gate; tests = gate + the project's own test command (degrades to gate if no test command is configured).",
     "verify": "tests",
     "test_cmd": "",
     "stream": true,
@@ -204,15 +245,71 @@
     "confirm_commands": true,
     "require_clean_git": true,
     "escalate_after_failed_verifies": 2,
-    "allowed_cmds": ["npm test", "npm run", "npx vitest", "npx tsc", "pytest", "python -m pytest", "cargo test", "go test", "dotnet test", "mvn test", "gradle test", "make test", "git status", "git diff", "git log", "ls", "dir"],
-    "denied_cmd_patterns": ["rm -rf", "rmdir /s", "del /f", "format ", "git push", "git reset --hard", "curl ", "wget ", "invoke-webrequest", "iwr ", "shutdown", "mkfs", ":(){", "sudo ", "chmod 777"],
-    "_note": "allowed_cmds run without asking (prefix match, case-insensitive). denied_cmd_patterns are NEVER run (substring match) — the model cannot override them. Anything else asks the user first unless --yes. File paths are always confined to the target repo regardless of these lists."
+    "allowed_cmds": [
+      "npm test",
+      "npm run",
+      "npx vitest",
+      "npx tsc",
+      "pytest",
+      "python -m pytest",
+      "cargo test",
+      "go test",
+      "dotnet test",
+      "mvn test",
+      "gradle test",
+      "make test",
+      "git status",
+      "git diff",
+      "git log",
+      "ls",
+      "dir"
+    ],
+    "denied_cmd_patterns": [
+      "rm -rf",
+      "rmdir /s",
+      "del /f",
+      "format ",
+      "git push",
+      "git reset --hard",
+      "curl ",
+      "wget ",
+      "invoke-webrequest",
+      "iwr ",
+      "shutdown",
+      "mkfs",
+      ":(){",
+      "sudo ",
+      "chmod 777"
+    ],
+    "_note": "allowed_cmds run without asking (prefix match, case-insensitive). denied_cmd_patterns are NEVER run (substring match) \u2014 the model cannot override them. Anything else asks the user first unless --yes. File paths are always confined to the target repo regardless of these lists.",
+    "repeat_limit": 3,
+    "use_corrections": true,
+    "auto_escalate": false,
+    "_escalation_note": "After escalate_after_failed_verifies failed verifications the agent climbs cascade.ladder \u2014 cheapest rung first. Cloud tiers cost money, so the user is ASKED before each climb unless auto_escalate=true (headless runs always auto-approve). repeat_limit: after this many identical tool calls the agent is told to change approach. use_corrections: inject lessons from corrections/ into each turn."
   },
   "cascade": {
-    "_comment": "§6.4 cost-ordered escalation. When the requested tier still FAILS the §6.1 mechanical gate after gate.max_retries, the pipeline escalates to `escalate_to` IF that provider is enabled (providers.<name>.enabled). Otherwise it falls through to Claude. Gemini is gated on creds today, so escalation is a no-op until providers.gemini.enabled=true. The 'front gate' (which tasks skip the cascade and go straight to Claude) is a Claude-side routing decision — see config/routing.md §6.",
+    "_comment": "\u00a76.4 cost-ordered escalation. When the requested tier still FAILS the \u00a76.1 mechanical gate after gate.max_retries, the pipeline escalates to `escalate_to` IF that provider is enabled (providers.<name>.enabled). Otherwise it falls through to Claude. Gemini is gated on creds today, so escalation is a no-op until providers.gemini.enabled=true. The 'front gate' (which tasks skip the cascade and go straight to Claude) is a Claude-side routing decision \u2014 see config/routing.md \u00a76.",
     "escalate_to": "gemini",
     "gemini_max_retries": 1,
-    "skip_cascade_categories": ["security", "architecture", "cross_file", "ambiguous"]
+    "skip_cascade_categories": [
+      "security",
+      "architecture",
+      "cross_file",
+      "ambiguous"
+    ],
+    "ladder": [
+      {
+        "provider": "gemini",
+        "model": "flash",
+        "why": "cheap cloud tier"
+      },
+      {
+        "provider": "gemini",
+        "model": "pro",
+        "why": "strongest tier, pricier"
+      }
+    ],
+    "_ladder_note": "Ordered escalation path, cheapest first. Each rung is used only if that provider is enabled and under its daily budget. Add e.g. {\"provider\": \"openai\", \"model\": \"\"} to extend. Legacy escalate_to is the fallback when ladder is absent."
   },
   "hardware": {
     "gpu": "NVIDIA GeForce RTX 5090",

@@ -56,12 +56,56 @@ what broke:
 `<repo>/.qwen-pipeline.json` → `agent_chat.test_cmd` in your config. With none configured,
 `tests` honestly degrades to `gate` rather than claiming a verification it didn't do.
 
+## Plan mode — look before it leaps
+
+`apprentice chat --plan` (or `/plan` mid-session) splits every request in two:
+
+1. **Investigate & propose** — the agent's editing tools are *removed from its toolset*,
+   so it physically cannot change anything. It reads, searches, and replies with a
+   numbered plan.
+2. **Approve & execute** — you say yes, and only then does it get the full toolset.
+
+The guarantee is structural rather than a prompt instruction a weak model might ignore.
+`run_tests` stays available while planning: knowing what currently fails is what makes a
+plan concrete.
+
+## When the model gets stuck
+
+Two safeguards, both aimed at how *weak* models fail:
+
+- **Thrash detection.** Re-issuing the same tool call with the same arguments
+  `agent_chat.repeat_limit` times (default 3) appends a warning to the tool result — the
+  one place the model always reads — telling it to change approach. Without this, a stuck
+  local model can burn its whole step budget repeating one command.
+- **The escalation ladder.** After `agent_chat.escalate_after_failed_verifies` failed
+  verifications, the agent climbs `cascade.ladder` — **cheapest rung first**:
+
+  ```jsonc
+  "cascade": { "ladder": [
+    { "provider": "gemini", "model": "flash", "why": "cheap cloud tier" },
+    { "provider": "gemini", "model": "pro",   "why": "strongest tier, pricier" }
+  ]}
+  ```
+
+  Local (free) → cheap cloud → strong cloud. A rung is skipped unless that provider is
+  enabled and under its daily budget. Because cloud tiers cost money, **you are asked
+  before each climb** (`escalation_offer`); set `agent_chat.auto_escalate: true` to skip
+  the prompt. Headless runs always auto-approve — nobody is watching to answer.
+
+## Learning from past corrections
+
+Every logged correction and machine-verified worker fix is embedded into
+`corrections/index.jsonl`. The agent now retrieves the most similar past lessons for your
+repo and prepends them to each request, so it stops repeating mistakes this project has
+already recorded. Turn off with `agent_chat.use_corrections: false`.
+
 ## Slash commands
 
 | Command | Effect |
 |---|---|
 | `/undo` | revert the agent's last completed turn |
 | `/verify off\|gate\|tests` | change the policy mid-session |
+| `/plan` · `/plan off` | plan-then-approve before any edit |
 | `/provider <name>` · `/model <tier>` | switch model mid-session |
 | `/cost` | tokens + estimated spend so far |
 | `/files` | files changed this session |
@@ -96,15 +140,10 @@ asking the model nicely:
 - **Caps.** `max_steps`, `max_seconds`, plus the per-provider daily token/USD budgets. A
   stuck agent stops; it cannot loop forever or drain your cloud credits.
 
-## When a weak model gets stuck
-
-After `agent_chat.escalate_after_failed_verifies` failed verifications, the session
-switches to the escalation tier (`cascade.escalate_to`, e.g. `gemini`) — if it's enabled
-and under budget. The stronger model is told to re-read the files rather than trust the
-failed attempts.
-
 ```
-  [ESCALATED] qwen kept failing verification - switching to 'gemini' for the rest of this task.
+  [ESCALATE?] qwen has failed verification repeatedly. Switch to gemini/flash
+              (cheap cloud tier) for the rest of this task?
+  [ESCALATED] qwen kept failing verification - switching to 'gemini/flash'.
 ```
 
 ## Long sessions
@@ -143,6 +182,9 @@ apprentice run "add mul(a,b) to calc.py" --done-when "pytest -q" --json
 | `verify_passed` / `verify_failed` | verdict for the turn | `check` (`gate:…`/`tests`), `text` = verbatim failure |
 | `escalated` | switched to a stronger tier | `text` |
 | `confirm_request` | a shell command needs approval | `tool`, `detail` |
+| `escalation_offer` | the agent is stuck and wants a stronger (paid) tier | `text`, `name` |
+| `ask` | a yes/no decision for the user (plan approval, escalation) | `question`, `detail` |
+| `nudge` | the agent was caught repeating itself and told to change approach | `text`, `tool` |
 | `confirm_auto` | approved automatically (`--yes`) | `tool`, `detail` |
 | `ack` | answer to a slash command | `command`, plus e.g. `usage`, `reverted` |
 | `turn_end` | one chat turn finished | `usage` |

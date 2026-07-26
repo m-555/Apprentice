@@ -272,6 +272,20 @@ def build_tools(ctx: ToolContext) -> dict[str, Tool]:
     return {t.name: t for t in defs}
 
 
+def readonly(registry: dict[str, Tool]) -> dict[str, Tool]:
+    """The same registry with every tool that can change anything removed.
+
+    Used by PLAN MODE: the model explores and proposes, but literally cannot edit a file
+    or run an arbitrary command until the user approves — the guarantee is structural,
+    not a promise in the prompt that a weak model might ignore.
+
+    `run_tests` survives on purpose: it runs the project's OWN configured command (not
+    arbitrary shell) and seeing the current failure is exactly what makes a plan useful.
+    """
+    return {name: tool for name, tool in registry.items()
+            if not tool.mutating and not tool.needs_confirm}
+
+
 def schemas(registry: dict[str, Tool]) -> list[dict[str, Any]]:
     return [t.schema() for t in registry.values()]
 

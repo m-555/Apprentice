@@ -903,6 +903,162 @@ def test_loop_budget_blocks_before_calling_model():
     assert not model.seen_messages          # the provider was never called
 
 
+# --- thrash detection, escalation ladder, plan mode, agent retrieval ---------
+def test_repeat_detection_nudges_the_model():
+    """The observed failure: a stuck model re-issues the SAME call forever. After
+    repeat_limit it must be told, inside the tool result it always reads."""
+    repo = _agent_repo()
+    cfg = json.loads(json.dumps(_CFG))
+    cfg["agent_chat"]["repeat_limit"] = 3
+    cfg["agent_chat"]["max_steps"] = 5
+    same = _turn(("list_files", {}))
+    s, v, events, _m = _run_agent(repo, cfg, [same] * 5, policy="off")
+
+    nudges = [e for e in events if e.kind == "nudge"]
+    assert nudges, "a repeated call must produce a nudge"
+    assert "list_files" in nudges[0].text
+    # the model is told inside the tool result, not just in a UI event
+    told = [m for m in s.messages
+            if m.get("role") == "tool" and "REPEATING YOURSELF" in (m.get("content") or "")]
+    assert told, "the nudge must reach the model's context"
+    # a DIFFERENT call must not be flagged
+    repo2 = _agent_repo()
+    s2, _v2, ev2, _m2 = _run_agent(
+        repo2, cfg,
+        [_turn(("read_file", {"path": "calc.py"})), _turn(("list_files", {})),
+         _turn(("finish", {"summary": "done"}))], policy="off")
+    assert not [e for e in ev2 if e.kind == "nudge"]
+
+
+def test_escalation_ladder_order_and_guards():
+    cfg = json.loads(json.dumps(_CFG))
+    cfg["providers"]["gemini"]["enabled"] = True
+    rungs = loop.escalation_ladder(cfg)
+    assert [(r["provider"], r["model"]) for r in rungs] == [
+        ("gemini", "flash"), ("gemini", "pro")]
+
+    # from local -> cheapest cloud rung first
+    first = loop.next_rung(cfg, "qwen", "")
+    assert (first["provider"], first["model"]) == ("gemini", "flash")
+    # from the cheap rung -> the strong one
+    second = loop.next_rung(cfg, "gemini", "flash")
+    assert (second["provider"], second["model"]) == ("gemini", "pro")
+    # top of the ladder -> nowhere left to climb
+    assert loop.next_rung(cfg, "gemini", "pro") is None
+
+    # a disabled provider is skipped entirely
+    cfg["providers"]["gemini"]["enabled"] = False
+    assert loop.next_rung(cfg, "qwen", "") is None
+
+    # an over-budget rung is skipped too
+    cfg["providers"]["gemini"]["enabled"] = True
+    cfg["metering"]["budgets"]["gemini_tokens_per_day"] = 1
+    tmp = Path(tempfile.mkdtemp())
+    metering._METRICS_PATH = tmp / "metrics.jsonl"
+    metering.record({"tier": "gemini", "tokens_out": 999}, cfg)
+    assert loop.next_rung(cfg, "qwen", "") is None
+
+    # legacy escalate_to still works when no ladder is configured
+    legacy = {"cascade": {"escalate_to": "gemini"}}
+    assert loop.escalation_ladder(legacy) == [{"provider": "gemini", "model": ""}]
+
+
+def test_escalation_asks_before_spending_money():
+    """Climbing to a paid tier must be the user's call unless auto_escalate."""
+    repo = _agent_repo()
+    test_cmd = _check_cmd()
+    cfg = json.loads(json.dumps(_CFG))
+    cfg["providers"]["gemini"]["enabled"] = True
+    cfg["agent_chat"]["escalate_after_failed_verifies"] = 1
+    cfg["agent_chat"]["max_steps"] = 4
+    wrong = "def add(a, b):\n    return a + b\ndef mul(a, b):\n    return a + b\n"
+    turns = [_turn(("write_file", {"path": "calc.py", "content": wrong})),
+             _turn(("finish", {"summary": "nope"})),
+             _turn(("finish", {"summary": "still nope"}))]
+
+    # DECLINED -> stay on the local model
+    asked: list[str] = []
+    s = session_mod.Session(str(repo), cfg, "qwen", verify_policy="tests",
+                            test_cmd=test_cmd)
+    v = verify_mod.Verifier(str(repo), cfg, "tests", test_cmd)
+    reg = verify_mod.wrap_registry(
+        tools_mod.build_tools(tools_mod.ToolContext(repo=str(repo), cfg=cfg,
+                                                    test_cmd=test_cmd)), v)
+    model = _ScriptedModel(list(turns))
+    old = loop.chat_providers.chat
+    loop.chat_providers.chat = model
+    try:
+        def decline(q, d=""):
+            asked.append(q)
+            return False
+        events = list(loop.run_turn(s, v, reg, "add mul()", None, decline))
+    finally:
+        loop.chat_providers.chat = old
+    assert asked and "gemini/flash" in asked[0]
+    assert any(e.kind == "escalation_offer" for e in events)
+    assert not any(e.kind == "escalated" for e in events)
+    assert s.provider == "qwen"                      # declined -> unchanged
+
+    # ACCEPTED -> climb to the cheap rung
+    repo2 = _agent_repo()
+    s2 = session_mod.Session(str(repo2), cfg, "qwen", verify_policy="tests",
+                             test_cmd=test_cmd)
+    v2 = verify_mod.Verifier(str(repo2), cfg, "tests", test_cmd)
+    reg2 = verify_mod.wrap_registry(
+        tools_mod.build_tools(tools_mod.ToolContext(repo=str(repo2), cfg=cfg,
+                                                    test_cmd=test_cmd)), v2)
+    loop.chat_providers.chat = _ScriptedModel(list(turns))
+    try:
+        events2 = list(loop.run_turn(s2, v2, reg2, "add mul()", None,
+                                     lambda q, d="": True))
+    finally:
+        loop.chat_providers.chat = old
+    assert any(e.kind == "escalated" for e in events2)
+    assert (s2.provider, s2.model) == ("gemini", "flash")   # cheapest rung, not pro
+
+
+def test_plan_mode_registry_cannot_edit():
+    """Plan mode's guarantee is structural: the editing tools are GONE, not just
+    discouraged in the prompt."""
+    repo = _agent_repo()
+    full = tools_mod.build_tools(tools_mod.ToolContext(repo=str(repo), cfg=_CFG))
+    ro = tools_mod.readonly(full)
+    # run_tests stays: it's the project's own command, and knowing what currently
+    # fails is what makes a plan concrete. Arbitrary shell and edits are gone.
+    assert set(ro) == {"list_files", "read_file", "search", "run_tests", "finish"}
+    for banned in ("write_file", "edit_file", "run_cmd"):
+        assert banned not in ro
+    # and the model is never even offered them
+    names = {s["function"]["name"] for s in tools_mod.schemas(ro)}
+    assert "write_file" not in names
+
+
+def test_agent_injects_past_corrections():
+    repo = _agent_repo()
+    s = session_mod.Session(str(repo), _CFG, "qwen", verify_policy="off")
+    fake = [{"task": "add a helper", "corrected_output": "use Decimal, not float",
+             "explanation": "float rounding broke the totals",
+             "error_category": "logic"}]
+    old_retrieve = loop.retrieval.retrieve
+    loop.retrieval.retrieve = lambda task, prov, role, cfg: fake
+    try:
+        text = loop._with_past_corrections(s, _CFG, "add another helper")
+    finally:
+        loop.retrieval.retrieve = old_retrieve
+    assert "float rounding broke the totals" in text
+    assert "add another helper" in text
+
+    # disabled by config, and never fatal when retrieval breaks
+    cfg_off = json.loads(json.dumps(_CFG))
+    cfg_off["agent_chat"]["use_corrections"] = False
+    assert loop._with_past_corrections(s, cfg_off, "hi") == "hi"
+    loop.retrieval.retrieve = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("down"))
+    try:
+        assert loop._with_past_corrections(s, _CFG, "hi") == "hi"
+    finally:
+        loop.retrieval.retrieve = old_retrieve
+
+
 # --- streaming ---------------------------------------------------------------
 def test_stream_tool_call_accumulator():
     """OpenAI streams tool calls in fragments keyed by index — they must reassemble."""

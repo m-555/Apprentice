@@ -27,7 +27,7 @@ and enforces daily budgets.
 Both share the same engine: providers, mechanical gate, tests, budgets, and the corrections
 store that makes the workers better over time.
 
-New here? Start with **[docs/MULTI_AGENT.md](docs/MULTI_AGENT.md)** — it explains, in beginner
+New here? **[docs/TRY_IT.md](docs/TRY_IT.md)** walks you through the whole thing on a toy project with the free local model. For the mental model, see **[docs/MULTI_AGENT.md](docs/MULTI_AGENT.md)** — it explains, in beginner
 terms, what an "agent" is and how the boss + two-worker model fits together.
 
 > **Note:** the project was formerly `qwen-pipeline`. Its default working directory and the MCP

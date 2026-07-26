@@ -95,17 +95,19 @@
     }
   }
 
-  function addConfirm(ev) {
+  function addConfirm(ev, opts) {
+    const o = opts || {};
     const box = el("div", "confirm");
-    box.appendChild(el("div", null, "The agent wants to run a command:"));
-    box.appendChild(el("div", "cmd", ev.detail || ""));
+    box.appendChild(el("div", null, o.title || "The agent wants to run a command:"));
+    box.appendChild(el("div", "cmd", o.body !== undefined ? o.body : (ev.detail || "")));
     const row = el("div", "row");
-    const allow = el("button", null, "Allow");
-    const deny = el("button", "secondary", "Deny");
+    const allow = el("button", null, o.allowLabel || "Allow");
+    const deny = el("button", "secondary", o.denyLabel || "Deny");
     const answer = (ok) => {
       vscode.postMessage({ type: "confirm", allow: ok });
       row.remove();
-      box.appendChild(el("div", "resolved", ok ? "Allowed." : "Denied."));
+      box.appendChild(el("div", "resolved",
+                          ok ? (o.yes || "Allowed.") : (o.no || "Denied.")));
     };
     allow.onclick = () => answer(true);
     deny.onclick = () => answer(false);
@@ -178,6 +180,23 @@
       case "confirm_request":
         setWorking(false);
         addConfirm(ev);
+        break;
+      case "escalation_offer":
+        // The agent is stuck and wants a stronger (paid) model — the user decides.
+        setWorking(false);
+        addConfirm(ev, { title: "Switch to a stronger model?", body: ev.text || "",
+                         allowLabel: "Switch", denyLabel: "Stay",
+                         yes: "Switching.", no: "Staying on the current model." });
+        break;
+      case "ask":
+        setWorking(false);
+        addConfirm(ev, { title: ev.question || "Proceed?", body: ev.detail || "",
+                         allowLabel: "Yes", denyLabel: "No",
+                         yes: "Approved.", no: "Declined." });
+        break;
+      case "nudge":
+        add(el("div", "badge info", "! " + (ev.text || "repeating") +
+                                    " - told the model to change approach"));
         break;
       case "confirm_auto":
         add(el("div", "tool", "auto-approved: " + (ev.detail || "")));

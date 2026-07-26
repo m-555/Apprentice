@@ -35,6 +35,12 @@ First release. A frontend for the Apprentice agent — it spawns the CLI and ren
   auto-approval and dirty-tree override. Every setting is optional: leave it empty and the
   agent's own configuration decides.
 
+### Also renders
+- `escalation_offer` — the agent is stuck and asks to move to a stronger (paid) model:
+  **Switch / Stay** buttons in the panel.
+- `ask` — any yes/no decision from the agent (e.g. approving a plan).
+- `nudge` — shown when the agent is caught repeating itself and told to change approach.
+
 ### Notes
 
 - The agent must be installed separately (`pipx install git+https://github.com/m-555/Apprentice.git`).

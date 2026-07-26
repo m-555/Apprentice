@@ -74,6 +74,15 @@ rl.on("line", (line) => {
   emit({ type: "tool_call", tool: "edit_file", args: { path: "calc.py" } });
   emit({ type: "tool_result", tool: "edit_file", text: "Edited calc.py (1 replacement(s))." });
 
+  if (text.includes("stuck")) {
+    pendingConfirm = true;
+    emit({ type: "nudge", text: "repeated read_file x3" });
+    emit({ type: "escalation_offer",
+           text: "qwen has failed verification repeatedly. Switch to gemini/flash?",
+           detail: "gemini/flash" });
+    return;
+  }
+
   if (text.includes("danger")) {
     pendingConfirm = true;
     emit({ type: "tool_call", tool: "run_cmd", args: { cmd: "echo danger" } });

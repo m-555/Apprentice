@@ -14,18 +14,20 @@ and the verbatim error, exactly like the delegate cascade does.
 
 from __future__ import annotations
 
+import json
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Iterator
 
 try:
-    from . import (budgets, chat_providers, corrections, metering, tools as tools_mod,
-                   verify as verify_mod)
+    from . import (budgets, chat_providers, corrections, metering, retrieval,
+                   tools as tools_mod, verify as verify_mod)
 except ImportError:
     import budgets
     import chat_providers
     import corrections
     import metering
+    import retrieval
     import tools as tools_mod
     import verify as verify_mod
 
@@ -58,6 +60,38 @@ class Event:
         return out
 
 
+def _call_signature(call) -> str:
+    """Identity of a tool call for thrash detection: name + arguments."""
+    try:
+        return f"{call.name}:{json.dumps(call.args, sort_keys=True)}"
+    except (TypeError, ValueError):
+        return f"{call.name}:{call.args!r}"
+
+
+def _with_past_corrections(session, cfg: dict[str, Any], user_text: str) -> str:
+    """Prepend lessons from this project's corrections store to the user's request.
+
+    The pipeline already learns: every `log_correction` and every machine-verified
+    worker fix is embedded into `corrections/index.jsonl`. Until now only `delegate`
+    used it — so the agent kept re-making mistakes the project had already recorded.
+    Retrieval is fail-safe: any problem here must never block the turn.
+    """
+    if not cfg.get("agent_chat", {}).get("use_corrections", True):
+        return user_text
+    try:
+        # Agent turns aren't tied to one role, so search across roles for this provider.
+        rcfg = dict(cfg)
+        rcfg["retrieval"] = {**cfg.get("retrieval", {}), "role_filter": False}
+        hits = retrieval.retrieve(user_text, session.provider, "", rcfg)
+        block = retrieval.format_fewshot(hits, max_solution_chars=600)
+        if not block:
+            return user_text
+        return (f"{block}\n--- END OF PAST LESSONS ---\n\n"
+                f"Now, the actual request:\n{user_text}")
+    except Exception:
+        return user_text
+
+
 def _record_usage(session, usage: dict[str, Any], provider: str, model: str) -> None:
     cost = metering.est_cost_usd(session.cfg, provider, model,
                                  int(usage.get("tokens_in", 0) or 0),
@@ -72,7 +106,7 @@ def _record_usage(session, usage: dict[str, Any], provider: str, model: str) -> 
 
 
 def run_turn(session, verifier: verify_mod.Verifier, registry: dict[str, tools_mod.Tool],
-             user_text: str | None = None, on_delta=None) -> Iterator[Event]:
+             user_text: str | None = None, on_delta=None, ask=None) -> Iterator[Event]:
     """Drive one user request to completion. Yields Events; mutates `session` in place.
 
     `on_delta(text)` is a SIDE CHANNEL for streaming: the provider calls it with each
@@ -87,10 +121,12 @@ def run_turn(session, verifier: verify_mod.Verifier, registry: dict[str, tools_m
     escalate_after = int(chat_cfg.get("escalate_after_failed_verifies", 2))
 
     if user_text is not None:
-        session.add_user(user_text)
+        session.add_user(_with_past_corrections(session, cfg, user_text))
 
     schemas = tools_mod.schemas(registry)
     failed_verifies = 0
+    repeats: dict[str, int] = {}          # tool+args signature -> times seen this turn
+    repeat_limit = int(chat_cfg.get("repeat_limit", 3))
 
     for step in range(1, max_steps + 1):
         if time.monotonic() > deadline:
@@ -124,7 +160,7 @@ def run_turn(session, verifier: verify_mod.Verifier, registry: dict[str, tools_m
                 yield Event("verify_failed", result.error_text, name=result.check)
                 session.add_system_note(result.as_tool_note())
                 if failed_verifies >= escalate_after:
-                    if (yield from _try_escalate(session, cfg)):
+                    if (yield from _try_escalate(session, cfg, ask)):
                         failed_verifies = 0
                 continue
             return
@@ -133,6 +169,24 @@ def run_turn(session, verifier: verify_mod.Verifier, registry: dict[str, tools_m
         for call in turn.tool_calls:
             yield Event("tool_call", name=call.name, args=call.args)
             result = tools_mod.dispatch(registry, call.name, call.args)
+
+            # Thrash guard. A weak model that gets stuck will re-issue the SAME call
+            # forever (observed live: 40 turns of identical run_cmd). It can't notice
+            # the pattern from the transcript, so we point it out in the one place it
+            # always reads — the tool result.
+            sig = _call_signature(call)
+            repeats[sig] = repeats.get(sig, 0) + 1
+            if repeats[sig] >= repeat_limit:
+                nudge = (
+                    f"\n\n--- YOU ARE REPEATING YOURSELF ---\n"
+                    f"You have now called `{call.name}` with these exact arguments "
+                    f"{repeats[sig]} times and gotten the same result each time. Repeating "
+                    f"it again will not help. Change approach: read the relevant file in "
+                    f"full, re-read the task, or explain what is blocking you and stop.")
+                result += nudge
+                yield Event("nudge", f"repeated {call.name} x{repeats[sig]}",
+                            name=call.name)
+
             session.add_tool_result(call, result)
             yield Event("tool_result", result, name=call.name)
             if call.name == "finish":
@@ -147,28 +201,85 @@ def run_turn(session, verifier: verify_mod.Verifier, registry: dict[str, tools_m
             yield Event("verify_failed", outcome.error_text, name=outcome.check)
             session.add_system_note(outcome.as_tool_note())
             if failed_verifies >= escalate_after:
-                if (yield from _try_escalate(session, cfg)):
+                if (yield from _try_escalate(session, cfg, ask)):
                     failed_verifies = 0
 
     yield Event("stopped", f"Step limit ({max_steps}) reached — stopping.")
 
 
-def _try_escalate(session, cfg: dict[str, Any]) -> Iterator[Event]:
-    """Switch the session to the next tier after repeated verification failures.
-    Same guards as the delegate cascade: a different, enabled, under-budget provider.
-    Returns True (via StopIteration value) if the switch happened."""
-    esc = cfg.get("cascade", {}).get("escalate_to", "")
-    if (not esc or esc == session.provider
-            or not chat_providers.supports_chat(cfg, esc)
-            or not cfg.get("providers", {}).get(esc, {}).get("enabled", False)
-            or budgets.exceeded(cfg, esc)):
+def escalation_ladder(cfg: dict[str, Any]) -> list[dict[str, str]]:
+    """The ordered list of tiers to climb when the current model keeps failing.
+
+    Cheapest first — the point is to spend the least money that solves the problem:
+        local (free)  ->  cheap cloud tier  ->  strong cloud tier
+    Configured as `cascade.ladder`; falls back to a single rung built from the legacy
+    `cascade.escalate_to` so existing configs keep working.
+    """
+    casc = cfg.get("cascade", {})
+    ladder = casc.get("ladder")
+    if isinstance(ladder, list) and ladder:
+        return [r for r in ladder if isinstance(r, dict) and r.get("provider")]
+    esc = casc.get("escalate_to", "")
+    return [{"provider": esc, "model": ""}] if esc else []
+
+
+def _rung_available(cfg: dict[str, Any], rung: dict[str, str]) -> str:
+    """"" if the rung can be used, else why it can't (for the log/UI)."""
+    prov = rung.get("provider", "")
+    if not chat_providers.supports_chat(cfg, prov):
+        return f"{prov} is not a chat-capable provider"
+    if not cfg.get("providers", {}).get(prov, {}).get("enabled", False):
+        return f"{prov} is not enabled in config"
+    blocked = budgets.exceeded(cfg, prov)
+    return blocked or ""
+
+
+def next_rung(cfg: dict[str, Any], provider: str, model: str) -> dict[str, str] | None:
+    """The next usable tier above (provider, model), or None if we're at the top."""
+    ladder = escalation_ladder(cfg)
+    start = -1
+    for i, rung in enumerate(ladder):
+        if rung.get("provider") == provider and (rung.get("model", "") or "") == (model or ""):
+            start = i
+            break
+    for rung in ladder[start + 1:]:
+        if rung.get("provider") == provider and (rung.get("model", "") or "") == (model or ""):
+            continue
+        if not _rung_available(cfg, rung):
+            return rung
+    return None
+
+
+def _try_escalate(session, cfg: dict[str, Any], ask=None) -> Iterator[Event]:
+    """Climb one rung of the escalation ladder after repeated failures.
+
+    Cloud tiers cost real money, so by default the user is ASKED before the switch
+    (`ask(question) -> bool`). Unattended runs pass no `ask` / set
+    `agent_chat.auto_escalate`, and the climb happens automatically.
+    Returns True (via StopIteration value) if the switch happened.
+    """
+    rung = next_rung(cfg, session.provider, session.model)
+    if rung is None:
         return False
-    old = session.provider
-    session.provider, session.model = esc, ""
-    yield Event("escalated", f"{old} kept failing verification — switching to '{esc}' "
-                             f"for the rest of this task.")
+    prov, mdl = rung["provider"], rung.get("model", "")
+    label = f"{prov}/{mdl}" if mdl else prov
+    why = rung.get("why", "")
+    old = f"{session.provider}/{session.model}" if session.model else session.provider
+
+    auto = bool(cfg.get("agent_chat", {}).get("auto_escalate", False)) or ask is None
+    if not auto:
+        question = (f"{old} has failed verification repeatedly. Switch to {label}"
+                    f"{' (' + why + ')' if why else ''} for the rest of this task?")
+        yield Event("escalation_offer", question, name=label)
+        if not ask(question, label):
+            yield Event("text", f"Staying on {old}. Tell me how you'd like to proceed.")
+            return False
+
+    session.provider, session.model = prov, mdl
+    yield Event("escalated", f"{old} kept failing verification — switching to "
+                             f"'{label}' for the rest of this task.")
     session.add_system_note(
-        f"[A stronger model ({esc}) has taken over after repeated failures. Re-read the "
+        f"[A stronger model ({label}) has taken over after repeated failures. Re-read the "
         f"relevant files before editing — do not assume the previous attempts were right.]")
     return True
 
@@ -176,7 +287,7 @@ def _try_escalate(session, cfg: dict[str, Any]) -> Iterator[Event]:
 def run_headless(session, verifier: verify_mod.Verifier,
                  registry: dict[str, tools_mod.Tool], task: str, done_when: str,
                  on_event: Callable[[Event], None] | None = None,
-                 on_delta=None) -> dict[str, Any]:
+                 on_delta=None, ask=None) -> dict[str, Any]:
     """Unattended mode: grind `task` until `done_when` exits 0 (the `assign` contract).
 
     Verification runs per turn as usual; `done_when` is the final objective gate. Returns
@@ -194,7 +305,7 @@ def run_headless(session, verifier: verify_mod.Verifier,
     done_passed, rounds, log = False, 0, ""
 
     for rounds in range(1, max_rounds + 1):
-        for ev in run_turn(session, verifier, registry, message, on_delta):
+        for ev in run_turn(session, verifier, registry, message, on_delta, ask):
             if on_event:
                 on_event(ev)
         rc, log = deliver.run_test_cmd(session.repo, done_when, timeout)

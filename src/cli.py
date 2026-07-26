@@ -21,6 +21,7 @@ Agent options (chat/run):
   --allow-dirty      allow an uncommitted/non-git working tree
   --resume ID        continue a saved chat session
   --json             emit JSON-lines events instead of human output (for UIs / CI)
+  --plan             (chat only) propose a plan and wait for approval before editing
   --done-when CMD    (run only) the acceptance command that must exit 0
 
 Non-interactive by design: `init` is idempotent and prints what it did/found, so it
@@ -175,6 +176,9 @@ def _agent_parser(prog: str, headless: bool) -> "argparse.ArgumentParser":
     p.add_argument("--json", dest="json_mode", action="store_true",
                    help="emit JSON-lines events instead of human output (for UIs/CI)")
     if not headless:
+        p.add_argument("--plan", dest="plan_mode", action="store_true",
+                       help="investigate and propose a plan for approval before editing")
+    if not headless:
         p.add_argument("--resume", default="")
     return p
 
@@ -189,7 +193,7 @@ def cmd_chat(argv: list[str]) -> int:
     provider = args.provider or cfg.get("providers", {}).get("default", "qwen")
     return chat_ui.chat(args.repo, cfg, provider, args.model, args.verify,
                         args.test_cmd, args.yes, args.allow_dirty, args.resume,
-                        args.json_mode)
+                        args.json_mode, args.plan_mode)
 
 
 def cmd_run(argv: list[str]) -> int:
