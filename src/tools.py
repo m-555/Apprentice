@@ -60,6 +60,11 @@ class ToolContext:
     max_read_kb: int = 48
     max_output_chars: int = 12000
     confirm: Callable[[str, str], bool] | None = None   # (tool_name, detail) -> allowed
+    session: Any = None                                  # for the task list
+    # Ask the FRONTEND for something only it can know (kind, payload) -> text.
+    # Set by the VS Code extension so the agent can read real language-server
+    # diagnostics; None everywhere else, and the tool is then simply not offered.
+    host: Callable[[str, dict[str, Any]], str] | None = None
 
     def chat_cfg(self) -> dict[str, Any]:
         return self.cfg.get("agent_chat", {})
@@ -217,6 +222,64 @@ def _run_tests(ctx: ToolContext) -> str:
                       int(ctx.chat_cfg().get("test_timeout_s", 600)))
 
 
+def _diagnostics(ctx: ToolContext, path: str = "") -> str:
+    """Real errors/warnings from the editor's language servers.
+
+    This is something a headless agent simply cannot see: type errors, unresolved
+    imports and lint problems as the user's own tooling reports them, without running
+    a build. Only available when a frontend provides the `host` bridge.
+    """
+    if ctx.host is None:
+        return ("ERROR: diagnostics are only available when running inside the editor. "
+                "Use run_tests or run_cmd instead.")
+    if path:
+        deliver.resolve_repo_path(ctx.repo, path)      # refuse paths outside the repo
+    try:
+        out = ctx.host("diagnostics", {"path": path})
+    except Exception as exc:
+        return f"ERROR: could not get diagnostics from the editor: {exc}"
+    return _truncate(out or "No problems reported by the editor.", ctx.max_output_chars)
+
+
+def _set_plan(ctx: ToolContext, steps: list | str) -> str:
+    """Replace the task list. Kept on the session (not in the chat) so compaction can't
+    lose it — the plan IS the agent's memory of intent across a long task."""
+    if ctx.session is None:
+        return "ERROR: no session — the task list is unavailable in this mode."
+    if isinstance(steps, str):                     # some models send a JSON string
+        try:
+            parsed = __import__("json").loads(steps)
+            steps = parsed if isinstance(parsed, list) else [steps]
+        except ValueError:
+            steps = [line.strip(" -*\t") for line in steps.splitlines() if line.strip()]
+    items = [str(s).strip() for s in (steps or []) if str(s).strip()]
+    if not items:
+        return "ERROR: give a non-empty list of short step descriptions."
+    ctx.session.plan = [{"text": s, "done": False} for s in items]
+    ctx.session.refresh_plan_prompt()
+    return "Task list set.\n" + ctx.session.render_plan()
+
+
+def _check_off(ctx: ToolContext, step: int) -> str:
+    if ctx.session is None:
+        return "ERROR: no session — the task list is unavailable in this mode."
+    plan = ctx.session.plan
+    if not plan:
+        return "ERROR: there is no task list yet — call set_plan first."
+    try:
+        idx = int(step)
+    except (TypeError, ValueError):
+        return f"ERROR: step must be a number (1-{len(plan)})."
+    if not 1 <= idx <= len(plan):
+        return f"ERROR: step {idx} is out of range (1-{len(plan)})."
+    plan[idx - 1]["done"] = True
+    ctx.session.refresh_plan_prompt()
+    remaining = [i for i, it in enumerate(plan, 1) if not it["done"]]
+    tail = (f"Next: step {remaining[0]} — {plan[remaining[0] - 1]['text']}"
+            if remaining else "All steps are done — verify, then call finish.")
+    return f"Step {idx} marked done.\n{ctx.session.render_plan()}\n{tail}"
+
+
 def _finish(ctx: ToolContext, summary: str) -> str:
     return summary
 
@@ -264,11 +327,32 @@ def build_tools(ctx: ToolContext) -> dict[str, Tool]:
               "required": ["cmd"]}, bind(_run_cmd), needs_confirm=True),
         Tool("run_tests", "Run this project's configured test command.",
              {"type": "object", "properties": {}, "required": []}, bind(_run_tests)),
+        Tool("set_plan", "Write down your task list BEFORE starting multi-step work, so "
+             "you don't lose track. Short imperative steps.",
+             {"type": "object", "properties": {
+                 "steps": {"type": "array", "items": {"type": "string"},
+                           "description": "ordered steps, e.g. ['read utils.ts', "
+                                          "'add formatBytes', 'add a test']"}},
+              "required": ["steps"]}, bind(_set_plan)),
+        Tool("check_off", "Mark a task-list step finished (1-based) as soon as it is "
+             "actually done. Returns the updated list and what's next.",
+             {"type": "object", "properties": {
+                 "step": {"type": "integer", "description": "step number, starting at 1"}},
+              "required": ["step"]}, bind(_check_off)),
         Tool("finish", "Call when the task is complete, with a one-paragraph summary of "
              "what you changed.",
              {"type": "object", "properties": {"summary": {"type": "string"}},
               "required": ["summary"]}, bind(_finish)),
     ]
+    if ctx.host is not None:
+        defs.insert(3, Tool(
+            "get_diagnostics",
+            "Errors and warnings from the editor's language servers (type errors, "
+            "unresolved imports, lint) — faster and more precise than running a build. "
+            "Optionally limit to one file.",
+            {"type": "object", "properties": {
+                "path": {"type": "string", "description": "repo-relative file (optional)"}},
+             "required": []}, bind(_diagnostics)))
     return {t.name: t for t in defs}
 
 

@@ -1023,9 +1023,11 @@ def test_plan_mode_registry_cannot_edit():
     repo = _agent_repo()
     full = tools_mod.build_tools(tools_mod.ToolContext(repo=str(repo), cfg=_CFG))
     ro = tools_mod.readonly(full)
-    # run_tests stays: it's the project's own command, and knowing what currently
-    # fails is what makes a plan concrete. Arbitrary shell and edits are gone.
-    assert set(ro) == {"list_files", "read_file", "search", "run_tests", "finish"}
+    # run_tests stays (the project's own command — knowing what currently fails is what
+    # makes a plan concrete), and so do the task-list tools (writing the plan down IS
+    # planning). Arbitrary shell and file edits are gone.
+    assert set(ro) == {"list_files", "read_file", "search", "run_tests",
+                       "set_plan", "check_off", "finish"}
     for banned in ("write_file", "edit_file", "run_cmd"):
         assert banned not in ro
     # and the model is never even offered them
@@ -1057,6 +1059,220 @@ def test_agent_injects_past_corrections():
         assert loop._with_past_corrections(s, _CFG, "hi") == "hi"
     finally:
         loop.retrieval.retrieve = old_retrieve
+
+
+# --- parallel dispatch, task list, host tools, steering ----------------------
+def test_parallel_dispatch_preserves_order_and_isolation():
+    """Results must line up positionally with the calls — a reordered list would
+    silently mispair tool messages with the assistant's calls."""
+    import threading
+    repo = _agent_repo()
+    reg = tools_mod.build_tools(tools_mod.ToolContext(repo=str(repo), cfg=_CFG))
+    calls = [chat_providers.ToolCall("a", "read_file", {"path": "calc.py"}),
+             chat_providers.ToolCall("b", "list_files", {}),
+             chat_providers.ToolCall("c", "search", {"pattern": "def add"})]
+    out = loop._dispatch_calls(reg, calls, {"parallel_tools": True, "parallel_max": 4})
+    assert len(out) == 3
+    assert "def add" in out[0]          # read_file
+    assert "check.py" in out[1]         # list_files
+    assert "calc.py:1" in out[2]        # search
+
+    # writes / approvals / finish / run_tests are never run concurrently
+    assert loop._parallel_safe(reg, calls[0])
+    for unsafe in ("write_file", "edit_file", "run_cmd", "run_tests", "finish"):
+        assert not loop._parallel_safe(
+            reg, chat_providers.ToolCall("x", unsafe, {}))
+
+    # they really do overlap in time
+    seen: list[str] = []
+    barrier = threading.Barrier(2, timeout=5)
+
+    def slow(**kw):
+        barrier.wait()                  # only passes if two run at once
+        seen.append("ran")
+        return "ok"
+    reg2 = dict(reg)
+    reg2["read_file"] = tools_mod.Tool("read_file", "", {}, slow)
+    reg2["search"] = tools_mod.Tool("search", "", {}, slow)
+    loop._dispatch_calls(reg2, [calls[0], calls[2]],
+                         {"parallel_tools": True, "parallel_max": 4})
+    assert len(seen) == 2               # no BrokenBarrierError -> genuinely concurrent
+
+
+def test_parallel_can_be_disabled_and_errors_are_contained():
+    repo = _agent_repo()
+    reg = tools_mod.build_tools(tools_mod.ToolContext(repo=str(repo), cfg=_CFG))
+    reg["boom"] = tools_mod.Tool("boom", "", {},
+                                 lambda **kw: (_ for _ in ()).throw(RuntimeError("bang")))
+    calls = [chat_providers.ToolCall("a", "list_files", {}),
+             chat_providers.ToolCall("b", "boom", {})]
+    out = loop._dispatch_calls(reg, calls, {"parallel_tools": True})
+    assert "check.py" in out[0]
+    assert "bang" in out[1]             # a thrown tool becomes a message, not a crash
+    serial = loop._dispatch_calls(reg, [calls[0]], {"parallel_tools": False})
+    assert "check.py" in serial[0]
+
+
+def test_task_list_survives_compaction():
+    """The plan lives on the session and is re-rendered into the SYSTEM message, which
+    compaction always keeps — that's the whole point of it."""
+    repo = _agent_repo()
+    cfg = json.loads(json.dumps(_CFG))
+    cfg["agent_chat"]["context_budget_tokens"] = 200
+    cfg["agent_chat"]["compact_keep_recent"] = 4
+    s = session_mod.Session(str(repo), cfg, "qwen", verify_policy="off")
+    reg = tools_mod.build_tools(
+        tools_mod.ToolContext(repo=str(repo), cfg=cfg, session=s))
+
+    out = tools_mod.dispatch(reg, "set_plan",
+                             {"steps": ["read calc.py", "add mul", "run tests"]})
+    assert "Task list set" in out and "[ ] add mul" in out
+    assert "[ ] add mul" in s.messages[0]["content"]      # pinned in the system prompt
+
+    assert "Step 2 marked done" in tools_mod.dispatch(reg, "check_off", {"step": 2})
+    assert "[x] add mul" in s.messages[0]["content"]
+    assert "Next: step 3" in tools_mod.dispatch(reg, "check_off", {"step": 1})
+
+    # blow past the context budget; the plan must still be there afterwards
+    for i in range(14):
+        s.add_user(f"filler {i} " + "x" * 200)
+    assert s.maybe_compact()
+    assert "[x] add mul" in s.messages[0]["content"]
+
+    # bad input is a message, never an exception
+    assert "out of range" in tools_mod.dispatch(reg, "check_off", {"step": 99})
+    assert "ERROR" in tools_mod.dispatch(reg, "set_plan", {"steps": []})
+    # some models send the array as a JSON string
+    assert "two" in tools_mod.dispatch(reg, "set_plan", {"steps": '["one","two"]'})
+
+
+def test_task_list_persists_across_resume():
+    home = Path(tempfile.mkdtemp())
+    old_root = session_mod.paths.ROOT
+    session_mod.paths.ROOT = home
+    try:
+        s = session_mod.Session(str(_agent_repo()), _CFG, "qwen", verify_policy="off")
+        s.plan = [{"text": "step one", "done": True}, {"text": "step two", "done": False}]
+        s.save()
+        back = session_mod.Session.load(s.id, _CFG)
+        assert back.plan == s.plan
+    finally:
+        session_mod.paths.ROOT = old_root
+
+
+def test_diagnostics_tool_only_exists_with_a_host():
+    repo = _agent_repo()
+    without = tools_mod.build_tools(tools_mod.ToolContext(repo=str(repo), cfg=_CFG))
+    assert "get_diagnostics" not in without      # headless: not offered at all
+
+    asked: list[tuple[str, dict]] = []
+
+    def host(kind, payload):
+        asked.append((kind, payload))
+        return "calc.py:3:5: error [ts]: Type 'string' is not assignable to 'number'"
+
+    withhost = tools_mod.build_tools(
+        tools_mod.ToolContext(repo=str(repo), cfg=_CFG, host=host))
+    assert "get_diagnostics" in withhost
+    out = tools_mod.dispatch(withhost, "get_diagnostics", {"path": "calc.py"})
+    assert "not assignable" in out
+    assert asked == [("diagnostics", {"path": "calc.py"})]
+
+    # the path guard still applies, and a broken host is reported not raised
+    assert "ERROR" in tools_mod.dispatch(withhost, "get_diagnostics",
+                                         {"path": "../../secrets.txt"})
+    boom = tools_mod.build_tools(tools_mod.ToolContext(
+        repo=str(repo), cfg=_CFG,
+        host=lambda k, p: (_ for _ in ()).throw(TimeoutError("no answer"))))
+    assert "could not get diagnostics" in tools_mod.dispatch(
+        boom, "get_diagnostics", {})
+
+
+def test_steering_is_injected_between_steps():
+    """A message sent while the agent works must reach the model mid-task, flagged as
+    taking priority — not queue up until the whole task ends."""
+    repo = _agent_repo()
+    cfg = json.loads(json.dumps(_CFG))
+    cfg["agent_chat"]["max_steps"] = 3
+    pending = ["use the existing helper instead"]
+    s = session_mod.Session(str(repo), cfg, "qwen", verify_policy="off")
+    v = verify_mod.Verifier(str(repo), cfg, "off")
+    reg = tools_mod.build_tools(tools_mod.ToolContext(repo=str(repo), cfg=cfg))
+    turns = [_turn(("list_files", {})), _turn(("finish", {"summary": "ok"}))]
+    old = loop.chat_providers.chat
+    loop.chat_providers.chat = _ScriptedModel(turns)
+    try:
+        events = list(loop.run_turn(s, v, reg, "do a thing", None, None,
+                                    lambda: pending.pop(0) if pending else ""))
+    finally:
+        loop.chat_providers.chat = old
+
+    steered = [e for e in events if e.kind == "steered"]
+    assert steered and "existing helper" in steered[0].text
+    injected = [m for m in s.messages
+                if "interrupted with new instructions" in (m.get("content") or "")]
+    assert injected and "existing helper" in injected[0]["content"]
+
+
+def test_stdin_broker_routes_answers_steering_and_host_replies():
+    """One thread owns stdin and must route three interleaved kinds of line correctly."""
+    import contextlib
+    import io
+    import os
+    import threading
+    import time
+    import chat_ui
+
+    read_fd, write_fd = os.pipe()
+    old_stdin = sys.stdin
+    sys.stdin = os.fdopen(read_fd, encoding="utf-8")
+    buf = io.StringIO()
+
+    def feed(text: str) -> None:
+        os.write(write_fd, text.encode("utf-8"))
+
+    def wait_for(predicate, timeout=5.0):
+        t0 = time.time()
+        while time.time() - t0 < timeout:
+            value = predicate()
+            if value:
+                return value
+            time.sleep(0.02)
+        return None
+
+    try:
+        with contextlib.redirect_stdout(buf):
+            broker = chat_ui.StdinBroker()
+
+            # 1) a plain line while nothing is being awaited -> STEERING
+            feed("use the existing helper\n")
+            assert wait_for(broker.take_steering) == "use the existing helper"
+
+            # 2) a host request round-trip, answered by id
+            got: dict = {}
+            th = threading.Thread(
+                target=lambda: got.update(v=broker.host_request("diagnostics", {}, 5)))
+            th.start()
+            emitted = wait_for(
+                lambda: json.loads(buf.getvalue().strip().splitlines()[-1])
+                if "host_request" in buf.getvalue() else None)
+            assert emitted["type"] == "host_request" and emitted["kind"] == "diagnostics"
+            feed(json.dumps({"id": emitted["id"], "result": "3 problems"}) + "\n")
+            th.join(timeout=5)
+            assert got.get("v") == "3 problems"
+            assert broker.take_steering() == ""     # the reply was NOT mistaken for input
+
+            # 3) while an answer is awaited, a plain line is the ANSWER
+            answer: dict = {}
+            th2 = threading.Thread(target=lambda: answer.update(v=broker.ask_line(5)))
+            th2.start()
+            time.sleep(0.1)
+            feed("y\n")
+            th2.join(timeout=5)
+            assert answer.get("v") == "y"
+    finally:
+        sys.stdin = old_stdin
+        os.close(write_fd)
 
 
 # --- streaming ---------------------------------------------------------------

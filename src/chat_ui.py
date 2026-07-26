@@ -7,8 +7,11 @@ renders events, asks for confirmations, and handles slash commands.
 from __future__ import annotations
 
 import json
+import queue
 import subprocess
 import sys
+import threading
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -69,6 +72,98 @@ def _render_json(ev: loop.Event) -> None:
     emit(ev.to_dict())
 
 
+_EOF = object()   # sentinel: stdin closed
+
+
+class StdinBroker:
+    """Single owner of stdin for `--json` mode.
+
+    Three things now arrive on stdin — user messages, answers to confirm/ask prompts,
+    and replies to host requests — and they can interleave: a frontend may send "actually,
+    do X instead" while the model is mid-turn. Reading stdin from several places would
+    race, so one background thread reads every line and routes it:
+
+      * a JSON object with `id` → a reply to that host request
+      * anything else, while an answer is being awaited → that answer
+      * anything else, otherwise → a STEERING message for the running turn
+
+    Only used in JSON mode; the terminal REPL keeps plain blocking `input()`, since you
+    can't usefully type mid-turn there anyway.
+    """
+
+    def __init__(self) -> None:
+        self._answers: "queue.Queue[str]" = queue.Queue()
+        self._steer: "queue.Queue[str]" = queue.Queue()
+        self._host: dict[str, "queue.Queue[str]"] = {}
+        self._awaiting = threading.Event()
+        self._lock = threading.Lock()
+        self._thread = threading.Thread(target=self._pump, daemon=True)
+        self._thread.start()
+
+    def _pump(self) -> None:
+        try:
+            for raw in sys.stdin:
+                line = raw.strip()
+                if not line:
+                    continue
+                if line.startswith("{"):
+                    try:
+                        obj = json.loads(line)
+                    except json.JSONDecodeError:
+                        obj = None
+                    if isinstance(obj, dict) and obj.get("id"):
+                        with self._lock:
+                            q = self._host.pop(obj["id"], None)
+                        if q is not None:
+                            q.put(str(obj.get("result", "")))
+                            continue
+                (self._answers if self._awaiting.is_set() else self._steer).put(line)
+        finally:
+            # stdin closed: waiters must be released, or the session hangs forever
+            # (plain input() used to raise EOFError here and callers rely on that).
+            self._answers.put(_EOF)
+
+    def ask_line(self, timeout: float | None = None) -> str:
+        """Block for the user's answer to a prompt we just emitted.
+        Raises EOFError when stdin has closed, mirroring `input()`."""
+        self._awaiting.set()
+        try:
+            value = self._answers.get(timeout=timeout)
+        except queue.Empty:
+            return ""
+        finally:
+            self._awaiting.clear()
+        if value is _EOF:
+            self._answers.put(_EOF)      # stay closed for every later caller
+            raise EOFError("stdin closed")
+        return value
+
+    def take_steering(self) -> str:
+        """Any message the user sent while the agent was working ("" if none)."""
+        parts = []
+        while True:
+            try:
+                parts.append(self._steer.get_nowait())
+            except queue.Empty:
+                break
+        return "\n".join(parts)
+
+    def host_request(self, kind: str, payload: dict[str, Any],
+                     timeout: float = 20.0) -> str:
+        """Ask the frontend for something only it can know; wait for its reply."""
+        req_id = uuid.uuid4().hex[:8]
+        q: "queue.Queue[str]" = queue.Queue()
+        with self._lock:
+            self._host[req_id] = q
+        emit({"type": "host_request", "id": req_id, "kind": kind, **payload})
+        try:
+            return q.get(timeout=timeout)
+        except queue.Empty:
+            with self._lock:
+                self._host.pop(req_id, None)
+            raise TimeoutError(f"the editor did not answer the {kind} request in time")
+
+
 def _make_renderers(json_mode: bool, stream: bool):
     """Return (render_event, on_delta).
 
@@ -126,7 +221,7 @@ def _resolve_test_cmd(repo: str, cfg: dict[str, Any], override: str = "") -> str
                or cfg.get("agent_chat", {}).get("test_cmd", "") or "")
 
 
-def _confirmer(auto_yes: bool, json_mode: bool = False):
+def _confirmer(auto_yes: bool, json_mode: bool = False, broker=None):
     """Approval gate for shell commands.
 
     In `--json` mode there is no prompt to render, so the protocol asks instead: we emit
@@ -146,7 +241,8 @@ def _confirmer(auto_yes: bool, json_mode: bool = False):
         else:
             _out(f"\n  [CONFIRM] The agent wants to run: {detail}")
         try:
-            answer = input("" if json_mode else "  Allow? [y/N] ").strip()
+            answer = (broker.ask_line() if (json_mode and broker)
+                      else input("" if json_mode else "  Allow? [y/N] ").strip())
         except (EOFError, KeyboardInterrupt):
             return False
         if json_mode and answer.startswith("{"):
@@ -169,7 +265,7 @@ EXECUTE_INSTRUCTION = (
     "before you edit it, then run the tests.")
 
 
-def _asker(auto_yes: bool, json_mode: bool):
+def _asker(auto_yes: bool, json_mode: bool, broker=None):
     """Yes/no question for decisions that cost money or change how the run behaves
     (currently: climbing the escalation ladder, approving a plan).
 
@@ -184,7 +280,8 @@ def _asker(auto_yes: bool, json_mode: bool):
         else:
             _out(f"\n  [ASK] {question}")
         try:
-            answer = input("" if json_mode else "  Proceed? [y/N] ").strip()
+            answer = (broker.ask_line() if (json_mode and broker)
+                      else input("" if json_mode else "  Proceed? [y/N] ").strip())
         except (EOFError, KeyboardInterrupt):
             return False
         if json_mode and answer.startswith("{"):
@@ -225,11 +322,16 @@ def _render(ev: loop.Event) -> None:
         _out(f"\n  [STOPPED] {ev.text}")
 
 
-def _make_runtime(sess, cfg: dict[str, Any], auto_yes: bool, json_mode: bool = False):
+def _make_runtime(sess, cfg: dict[str, Any], auto_yes: bool, json_mode: bool = False,
+                  broker=None, host_tools: bool = False):
     """Build the verifier + verification-wrapped tool registry for a session."""
     verifier = verify_mod.Verifier(sess.repo, cfg, sess.verify_policy, sess.test_cmd)
+    # `host` is only wired when a frontend advertised it (--host-tools): the editor is
+    # the only thing that can answer a diagnostics request.
+    host = (broker.host_request if (host_tools and broker) else None)
     ctx = tools_mod.ToolContext(repo=sess.repo, cfg=cfg, test_cmd=sess.test_cmd,
-                                confirm=_confirmer(auto_yes, json_mode))
+                                confirm=_confirmer(auto_yes, json_mode, broker),
+                                session=sess, host=host)
     registry = verify_mod.wrap_registry(tools_mod.build_tools(ctx), verifier)
     return verifier, registry
 
@@ -251,7 +353,7 @@ def _session_end_event(sess, verifier, extra: dict[str, Any] | None = None
 def chat(repo: str, cfg: dict[str, Any], provider: str, model: str = "",
          verify: str = "", test_cmd: str = "", auto_yes: bool = False,
          allow_dirty: bool = False, resume: str = "", json_mode: bool = False,
-         plan_mode: bool = False) -> int:
+         plan_mode: bool = False, host_tools: bool = False) -> int:
     repo = str(Path(repo).resolve())
     chat_cfg = cfg.get("agent_chat", {})
 
@@ -285,10 +387,12 @@ def chat(repo: str, cfg: dict[str, Any], provider: str, model: str = "",
             verify or chat_cfg.get("verify", "tests"),
             _resolve_test_cmd(repo, cfg, test_cmd))
 
-    verifier, registry = _make_runtime(sess, cfg, auto_yes, json_mode)
+    broker = StdinBroker() if json_mode else None
+    verifier, registry = _make_runtime(sess, cfg, auto_yes, json_mode, broker, host_tools)
     render, on_delta = _make_renderers(
         json_mode, bool(chat_cfg.get("stream", True)))
-    ask = _asker(auto_yes, json_mode)
+    ask = _asker(auto_yes, json_mode, broker)
+    steering = broker.take_steering if broker else None
     ro_registry = tools_mod.readonly(registry)
 
     if json_mode:
@@ -304,7 +408,8 @@ def chat(repo: str, cfg: dict[str, Any], provider: str, model: str = "",
 
     while True:
         try:
-            line = input("" if json_mode else "you > ").strip()
+            line = (broker.ask_line() if broker
+                    else input("you > ")).strip()
         except (EOFError, KeyboardInterrupt):
             if not json_mode:
                 _out()
@@ -335,7 +440,8 @@ def chat(repo: str, cfg: dict[str, Any], provider: str, model: str = "",
             elif cmd == "verify":
                 if arg in verify_mod.POLICIES:
                     sess.verify_policy = arg
-                    verifier, registry = _make_runtime(sess, cfg, auto_yes, json_mode)
+                    verifier, registry = _make_runtime(sess, cfg, auto_yes, json_mode,
+                                                      broker, host_tools)
                     reply(f"  verification = {verifier.policy}", verify=verifier.policy)
                 else:
                     reply(f"  usage: /verify {'|'.join(verify_mod.POLICIES)}",
@@ -376,14 +482,16 @@ def chat(repo: str, cfg: dict[str, Any], provider: str, model: str = "",
             if plan_mode:
                 # Phase 1: investigate and propose, with editing tools REMOVED.
                 for ev in loop.run_turn(sess, verifier, ro_registry,
-                                        PLAN_INSTRUCTION + line, on_delta, ask):
+                                        PLAN_INSTRUCTION + line, on_delta, ask,
+                                        steering):
                     render(ev)
                 if not ask("Execute this plan?", ""):
                     render(loop.Event("stopped", "Plan not executed."))
                     sess.save()
                     continue
                 line = EXECUTE_INSTRUCTION
-            for ev in loop.run_turn(sess, verifier, registry, line, on_delta, ask):
+            for ev in loop.run_turn(sess, verifier, registry, line, on_delta, ask,
+                                    steering):
                 render(ev)
         except KeyboardInterrupt:
             render(loop.Event("stopped", "interrupted"))
@@ -407,7 +515,8 @@ def chat(repo: str, cfg: dict[str, Any], provider: str, model: str = "",
 
 def run_headless(repo: str, cfg: dict[str, Any], task: str, done_when: str,
                  provider: str, model: str = "", verify: str = "",
-                 test_cmd: str = "", json_mode: bool = False) -> int:
+                 test_cmd: str = "", json_mode: bool = False,
+                 host_tools: bool = False) -> int:
     repo = str(Path(repo).resolve())
     if not chat_providers.supports_chat(cfg, provider):
         msg = f"Provider '{provider}' can't run the agent."
@@ -417,7 +526,11 @@ def run_headless(repo: str, cfg: dict[str, Any], task: str, done_when: str,
         repo, cfg, provider, model,
         verify or cfg.get("agent_chat", {}).get("verify", "tests"),
         _resolve_test_cmd(repo, cfg, test_cmd))
-    verifier, registry = _make_runtime(sess, cfg, auto_yes=True, json_mode=json_mode)
+    # Headless auto-approves everything and nobody steers it, so stdin is only worth
+    # owning when the frontend can answer host requests.
+    broker = StdinBroker() if (json_mode and host_tools) else None
+    verifier, registry = _make_runtime(sess, cfg, auto_yes=True, json_mode=json_mode,
+                                       broker=broker, host_tools=host_tools)
     render, on_delta = _make_renderers(
         json_mode, bool(cfg.get("agent_chat", {}).get("stream", True)))
 
@@ -429,7 +542,8 @@ def run_headless(repo: str, cfg: dict[str, Any], task: str, done_when: str,
              f"done_when={done_when}")
 
     result = loop.run_headless(sess, verifier, registry, task, done_when, render,
-                               on_delta, _asker(True, json_mode))
+                               on_delta, _asker(True, json_mode, broker),
+                               broker.take_steering if broker else None)
     sess.save()
 
     if json_mode:

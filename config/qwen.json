@@ -285,7 +285,10 @@
     "repeat_limit": 3,
     "use_corrections": true,
     "auto_escalate": false,
-    "_escalation_note": "After escalate_after_failed_verifies failed verifications the agent climbs cascade.ladder \u2014 cheapest rung first. Cloud tiers cost money, so the user is ASKED before each climb unless auto_escalate=true (headless runs always auto-approve). repeat_limit: after this many identical tool calls the agent is told to change approach. use_corrections: inject lessons from corrections/ into each turn."
+    "_escalation_note": "After escalate_after_failed_verifies failed verifications the agent climbs cascade.ladder \u2014 cheapest rung first. Cloud tiers cost money, so the user is ASKED before each climb unless auto_escalate=true (headless runs always auto-approve). repeat_limit: after this many identical tool calls the agent is told to change approach. use_corrections: inject lessons from corrections/ into each turn.",
+    "parallel_tools": true,
+    "parallel_max": 4,
+    "_parallel_note": "Run independent READ-ONLY tool calls concurrently (models often ask for several files at once). Writes, commands needing approval, run_tests and finish always stay strictly ordered."
   },
   "cascade": {
     "_comment": "\u00a76.4 cost-ordered escalation. When the requested tier still FAILS the \u00a76.1 mechanical gate after gate.max_retries, the pipeline escalates to `escalate_to` IF that provider is enabled (providers.<name>.enabled). Otherwise it falls through to Claude. Gemini is gated on creds today, so escalation is a no-op until providers.gemini.enabled=true. The 'front gate' (which tasks skip the cascade and go straight to Claude) is a Claude-side routing decision \u2014 see config/routing.md \u00a76.",

@@ -106,7 +106,8 @@ def _record_usage(session, usage: dict[str, Any], provider: str, model: str) -> 
 
 
 def run_turn(session, verifier: verify_mod.Verifier, registry: dict[str, tools_mod.Tool],
-             user_text: str | None = None, on_delta=None, ask=None) -> Iterator[Event]:
+             user_text: str | None = None, on_delta=None, ask=None,
+             steering=None) -> Iterator[Event]:
     """Drive one user request to completion. Yields Events; mutates `session` in place.
 
     `on_delta(text)` is a SIDE CHANNEL for streaming: the provider calls it with each
@@ -137,6 +138,17 @@ def run_turn(session, verifier: verify_mod.Verifier, registry: dict[str, tools_m
             yield Event("stopped", blocked)
             return
 
+        # STEERING: anything the user typed while the agent was working is picked up
+        # here, between steps — so "no, use the existing helper" lands immediately
+        # instead of after the whole task finishes.
+        if steering is not None:
+            note = steering()
+            if note:
+                yield Event("steered", note)
+                session.add_system_note(
+                    f"[The user interrupted with new instructions — follow them now, "
+                    f"they take priority over your current approach:]\n{note}")
+
         session.maybe_compact()
         usage: dict[str, Any] = {}
         try:
@@ -166,10 +178,14 @@ def run_turn(session, verifier: verify_mod.Verifier, registry: dict[str, tools_m
             return
 
         done = False
+        # Announce every call before running any, then execute. Independent read-only
+        # calls run CONCURRENTLY (models routinely emit read_file + list_files together);
+        # anything that writes, needs approval, or ends the turn stays strictly ordered.
         for call in turn.tool_calls:
             yield Event("tool_call", name=call.name, args=call.args)
-            result = tools_mod.dispatch(registry, call.name, call.args)
+        outcomes = _dispatch_calls(registry, turn.tool_calls, chat_cfg)
 
+        for call, result in zip(turn.tool_calls, outcomes):
             # Thrash guard. A weak model that gets stuck will re-issue the SAME call
             # forever (observed live: 40 turns of identical run_cmd). It can't notice
             # the pattern from the transcript, so we point it out in the one place it
@@ -205,6 +221,50 @@ def run_turn(session, verifier: verify_mod.Verifier, registry: dict[str, tools_m
                     failed_verifies = 0
 
     yield Event("stopped", f"Step limit ({max_steps}) reached — stopping.")
+
+
+def _parallel_safe(registry: dict[str, tools_mod.Tool], call) -> bool:
+    """Can this call run concurrently with its siblings?
+
+    Only pure reads. Anything that writes must stay ordered (the verifier snapshots in
+    call order), anything needing approval must stay ordered (one prompt at a time),
+    `finish` ends the turn, and `run_tests` shells out against the whole repo — running
+    two of those at once is at best pointless and at worst racy.
+    """
+    tool = registry.get(call.name)
+    return bool(tool and not tool.mutating and not tool.needs_confirm
+                and call.name not in ("finish", "run_tests"))
+
+
+def _dispatch_calls(registry: dict[str, tools_mod.Tool], calls: list,
+                    chat_cfg: dict[str, Any]) -> list[str]:
+    """Run a turn's tool calls, returning results in the ORIGINAL order.
+
+    Results must line up with `calls` positionally: the transcript pairs each tool
+    message with the assistant's call, so a reordered list would silently corrupt the
+    conversation.
+    """
+    results: list[str | None] = [None] * len(calls)
+    if not calls:
+        return []
+
+    parallel = [i for i, c in enumerate(calls) if _parallel_safe(registry, c)]
+    max_workers = int(chat_cfg.get("parallel_max", 4))
+    if chat_cfg.get("parallel_tools", True) and len(parallel) > 1 and max_workers > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(parallel))) as pool:
+            futures = {pool.submit(tools_mod.dispatch, registry, calls[i].name,
+                                   calls[i].args): i for i in parallel}
+            for fut, i in futures.items():
+                try:
+                    results[i] = fut.result()
+                except Exception as exc:            # never let one tool kill the turn
+                    results[i] = f"ERROR: {exc}"
+
+    for i, call in enumerate(calls):               # the rest, strictly in order
+        if results[i] is None:
+            results[i] = tools_mod.dispatch(registry, call.name, call.args)
+    return [r or "" for r in results]
 
 
 def escalation_ladder(cfg: dict[str, Any]) -> list[dict[str, str]]:
@@ -287,7 +347,7 @@ def _try_escalate(session, cfg: dict[str, Any], ask=None) -> Iterator[Event]:
 def run_headless(session, verifier: verify_mod.Verifier,
                  registry: dict[str, tools_mod.Tool], task: str, done_when: str,
                  on_event: Callable[[Event], None] | None = None,
-                 on_delta=None, ask=None) -> dict[str, Any]:
+                 on_delta=None, ask=None, steering=None) -> dict[str, Any]:
     """Unattended mode: grind `task` until `done_when` exits 0 (the `assign` contract).
 
     Verification runs per turn as usual; `done_when` is the final objective gate. Returns
@@ -305,7 +365,8 @@ def run_headless(session, verifier: verify_mod.Verifier,
     done_passed, rounds, log = False, 0, ""
 
     for rounds in range(1, max_rounds + 1):
-        for ev in run_turn(session, verifier, registry, message, on_delta, ask):
+        for ev in run_turn(session, verifier, registry, message, on_delta, ask,
+                           steering):
             if on_event:
                 on_event(ev)
         rc, log = deliver.run_test_cmd(session.repo, done_when, timeout)

@@ -59,7 +59,8 @@
       working.remove();
       working = null;
     }
-    sendBtn.disabled = !!on;
+    // NOT disabled while working: sending mid-turn steers the running task.
+    sendBtn.textContent = on ? "Steer" : "Send";
   }
 
   function addTool(ev) {
@@ -194,6 +195,9 @@
                          allowLabel: "Yes", denyLabel: "No",
                          yes: "Approved.", no: "Declined." });
         break;
+      case "steered":
+        add(el("div", "badge info", "-> redirected: " + (ev.text || "")));
+        break;
       case "nudge":
         add(el("div", "badge info", "! " + (ev.text || "repeating") +
                                     " - told the model to change approach"));
@@ -249,6 +253,12 @@
       case "notice":
         add(el("div", "notice", msg.text));
         break;
+      case "steering":
+        // Sent mid-turn: shown as the user's message, but it redirects the running
+        // task rather than starting a new one.
+        add(el("div", "msg user", msg.text));
+        add(el("div", "notice", "sent to the running task"));
+        break;
       case "header":
         renderHeader(msg);
         break;
@@ -265,10 +275,13 @@
   function send() {
     const text = input.value.trim();
     if (!text) return;
-    streamBubble = null;
+    const steering = !!working;      // mid-turn -> this redirects, not a new turn
+    if (!steering) {
+      streamBubble = null;
+      setWorking(true);
+    }
     vscode.postMessage({ type: "user", text });
     input.value = "";
-    setWorking(true);
   }
 
   sendBtn.onclick = send;

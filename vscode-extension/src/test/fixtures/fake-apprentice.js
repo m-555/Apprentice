@@ -43,12 +43,21 @@ emit({
 });
 
 let pendingConfirm = null;
+let pendingHost = null;
 
 const rl = readline.createInterface({ input: process.stdin });
 
 rl.on("line", (line) => {
   const text = line.trim();
   if (!text) return;
+
+  if (pendingHost) {
+    const obj = JSON.parse(text);
+    emit({ type: "tool_result", tool: "get_diagnostics", text: obj.result });
+    pendingHost = null;
+    emit({ type: "turn_end", usage: usage() });
+    return;
+  }
 
   if (pendingConfirm) {
     const allow =
@@ -73,6 +82,13 @@ rl.on("line", (line) => {
   emit({ type: "tool_result", tool: "read_file", text: "1\tdef add(a, b):" });
   emit({ type: "tool_call", tool: "edit_file", args: { path: "calc.py" } });
   emit({ type: "tool_result", tool: "edit_file", text: "Edited calc.py (1 replacement(s))." });
+
+  if (text.includes("diag")) {
+    // ask the editor for diagnostics and wait for its reply (routed by id)
+    pendingHost = true;
+    emit({ type: "host_request", id: "h1", kind: "diagnostics", path: "calc.py" });
+    return;
+  }
 
   if (text.includes("stuck")) {
     pendingConfirm = true;

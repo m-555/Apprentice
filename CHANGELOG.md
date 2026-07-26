@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added — task list, editor diagnostics, steering, parallel tools
+- **Task list** (`set_plan` / `check_off`): a durable checklist kept on the session and
+  re-rendered into the system prompt, so compaction can't lose it and `--resume` restores
+  it. Long tasks stop drifting.
+- **`get_diagnostics`** — real language-server errors/warnings, offered only when a
+  frontend advertises `--host-tools` and answers `host_request` events. The VS Code
+  extension does; this is something a headless agent cannot see at all.
+- **Steering**: a message sent while the agent is working is injected between steps and
+  flagged as taking priority, instead of queuing until the task ends. In the panel the
+  composer stays live (the send button becomes *Steer*).
+- **Parallel tool dispatch**: independent read-only calls now run concurrently (models
+  routinely ask for several files at once). Writes, approvals, `run_tests` and `finish`
+  stay strictly ordered, and results are always returned in call order.
+- New `StdinBroker` gives `--json` mode a single owner of stdin, routing user messages,
+  prompt answers and host replies — and releasing waiters on EOF.
+
 ### Added — making a weak model behave (plan mode, thrash guard, cost ladder, memory)
 Four changes aimed squarely at how *small local models* fail, rather than at raw ability.
 

@@ -17,6 +17,18 @@ function collect(extraArgs = []) {
   return { agent, events, invalid, done };
 }
 
+const untilMatch = (events, predicate, ms = 5000) =>
+  new Promise((resolve, reject) => {
+    const t0 = Date.now();
+    const tick = () => {
+      const found = events.find(predicate);
+      if (found) return resolve(found);
+      if (Date.now() - t0 > ms) return reject(new Error("timeout waiting for event"));
+      setTimeout(tick, 10);
+    };
+    tick();
+  });
+
 const until = (events, type, ms = 5000) =>
   new Promise((resolve, reject) => {
     const t0 = Date.now();
@@ -126,6 +138,25 @@ test("escalation offers are answered on the same channel as approvals", async ()
 
   agent.answerConfirm(true);
   await until(events, "turn_end");
+  agent.end();
+  await done;
+});
+
+test("host requests are answered by id on stdin", async () => {
+  // The agent asks the editor for something only it knows (diagnostics); the reply is
+  // routed back by id, not treated as a user message.
+  const { agent, events, done } = collect();
+  await until(events, "session_start");
+  agent.send("show me diag");
+  const req = await until(events, "host_request");
+  assert.equal(req.kind, "diagnostics");
+  assert.equal(req.path, "calc.py");
+
+  agent.send(JSON.stringify({ id: req.id, result: "calc.py:3:1: error: boom" }));
+  // Be specific: the fixture emits other tool_results in the same turn.
+  const res = await untilMatch(
+    events, (e) => e.type === "tool_result" && e.tool === "get_diagnostics");
+  assert.match(res.text, /boom/);
   agent.end();
   await done;
 });

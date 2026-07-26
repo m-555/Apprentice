@@ -92,6 +92,36 @@ Two safeguards, both aimed at how *weak* models fail:
   before each climb** (`escalation_offer`); set `agent_chat.auto_escalate: true` to skip
   the prompt. Headless runs always auto-approve — nobody is watching to answer.
 
+## The task list (how long jobs stay on the rails)
+
+`set_plan(steps)` and `check_off(step)` give the agent a durable checklist. It lives on the
+**session**, not in the conversation, and is re-rendered into the system prompt — so
+compaction can never lose it, and `--resume` brings it back. Losing track of intent
+halfway through is the classic weak-model failure; this is the antidote.
+
+```
+--- YOUR TASK LIST ---
+  1. [x] read calc.py
+  2. [x] add power()
+  3. [ ] run the tests
+(1 of 3 remaining)
+```
+
+## Editor diagnostics (VS Code only)
+
+Inside the extension the agent gets one extra tool, `get_diagnostics` — real
+language-server errors, warnings and unresolved imports, without running a build. A
+headless agent cannot see these at all. The CLI only offers the tool when a frontend
+passes `--host-tools` and answers `host_request` events.
+
+## Steering — redirect a running task
+
+Send a message while the agent is working and it is picked up **between steps**, marked as
+taking priority: "no, use the existing helper instead" lands immediately rather than after
+the task finishes. In the panel the composer stays live (the button reads *Steer*); over
+the wire it's just a normal stdin line. Terminal mode is unaffected — you can't usefully
+type mid-turn there.
+
 ## Learning from past corrections
 
 Every logged correction and machine-verified worker fix is embedded into
@@ -185,6 +215,8 @@ apprentice run "add mul(a,b) to calc.py" --done-when "pytest -q" --json
 | `escalation_offer` | the agent is stuck and wants a stronger (paid) tier | `text`, `name` |
 | `ask` | a yes/no decision for the user (plan approval, escalation) | `question`, `detail` |
 | `nudge` | the agent was caught repeating itself and told to change approach | `text`, `tool` |
+| `steered` | a message you sent mid-turn was injected into the running task | `text` |
+| `host_request` | the agent needs something only the frontend knows (e.g. diagnostics) | `id`, `kind`, payload |
 | `confirm_auto` | approved automatically (`--yes`) | `tool`, `detail` |
 | `ack` | answer to a slash command | `command`, plus e.g. `usage`, `reverted` |
 | `turn_end` | one chat turn finished | `usage` |
@@ -201,6 +233,10 @@ as a single `text` event. A UI should append the deltas to a live bubble and the
 `agent_chat.stream: false` (or per provider, `providers.<name>.stream: false`) and only
 `text` is emitted. Supported for `ollama-local` and `openai-compatible` providers;
 `vertex-ai` replies arrive whole.
+
+**Host requests.** `host_request` is the only event that *requires* an answer from the
+frontend: reply on stdin with `{"id": "<the id>", "result": "<text>"}`. Ignoring it just
+times out and the agent carries on, so a UI that doesn't implement it still works.
 
 **Approvals over the wire.** In `--json` mode there's no prompt to show, so when a
 non-allowlisted command comes up the agent emits `confirm_request` and reads **one line

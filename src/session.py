@@ -76,6 +76,10 @@ class Session:
         self.test_cmd = test_cmd
         self.id = session_id or uuid.uuid4().hex[:12]
         self.started = time.time()
+        # The agent's task list (see tools.set_plan / check_off). Kept on the SESSION,
+        # not in the conversation, so it survives context compaction — losing the plan
+        # halfway through a long task is exactly how weak models drift.
+        self.plan: list[dict[str, Any]] = []
         self.messages: list[dict[str, Any]] = [
             {"role": "system", "content": self._system_prompt()}]
         self.usage = {"tokens_in": 0, "tokens_out": 0, "est_cost_usd": 0.0, "turns": 0}
@@ -93,8 +97,33 @@ class Session:
             parts.append(
                 f"VERIFICATION IS ON ({self.verify_policy}): after each of your turns the "
                 f"repo is checked, and any change that fails is automatically reverted.")
+        plan = self.render_plan()
+        if plan:
+            parts.append(plan + "\n(Keep this current with check_off as you finish each "
+                                "step. It is your memory across a long task.)")
         parts.append(f"--- REPOSITORY FILES ---\n{build_repo_map(self.repo, self.cfg)}")
         return "\n\n".join(parts)
+
+    # --- the task list ------------------------------------------------------
+    def render_plan(self) -> str:
+        """The plan as the model should see it: `[x] done` / `[ ] pending`."""
+        if not self.plan:
+            return ""
+        lines = [f"  {i}. [{'x' if it['done'] else ' '}] {it['text']}"
+                 for i, it in enumerate(self.plan, 1)]
+        remaining = sum(1 for it in self.plan if not it["done"])
+        return ("--- YOUR TASK LIST ---\n" + "\n".join(lines)
+                + f"\n({remaining} of {len(self.plan)} remaining)")
+
+    def refresh_plan_prompt(self) -> None:
+        """Re-render the system message so the task list is always in front of the model.
+
+        Kept in the SYSTEM message on purpose: compaction preserves it, so a 30-turn task
+        can't lose track of what it was doing. The cost is that the system prompt changes
+        when the plan changes (a handful of times per task), which is a fair trade against
+        drifting.
+        """
+        self.messages[0] = {"role": "system", "content": self._system_prompt()}
 
     # --- history ------------------------------------------------------------
     def add_user(self, text: str) -> None:
@@ -166,7 +195,7 @@ class Session:
         p.write_text(json.dumps({
             "id": self.id, "repo": self.repo, "provider": self.provider,
             "model": self.model, "verify": self.verify_policy,
-            "test_cmd": self.test_cmd, "started": self.started,
+            "test_cmd": self.test_cmd, "started": self.started, "plan": self.plan,
             "usage": self.usage, "messages": self.messages,
         }, ensure_ascii=False, indent=2), encoding="utf-8")
         return p
@@ -178,6 +207,7 @@ class Session:
         s = cls(data["repo"], cfg, data.get("provider", "qwen"), data.get("model", ""),
                 data.get("verify", "tests"), data.get("test_cmd", ""), data["id"])
         s.messages = data["messages"]
+        s.plan = data.get("plan", [])
         s.usage = data.get("usage", s.usage)
         return s
 

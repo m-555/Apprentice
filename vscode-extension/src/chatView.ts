@@ -12,6 +12,7 @@
 import * as vscode from "vscode";
 import { AgentProcess } from "./agentProcess";
 import { AgentSettings, chatArgs, runArgs } from "./config";
+import { collectDiagnostics } from "./diagnostics";
 import { showDiff } from "./diffs";
 import { locate, NotFoundError } from "./locate";
 import { AgentEvent, MUTATING_TOOLS, SessionEndEvent, SessionStartEvent, ToolCallEvent, Usage } from "./protocol";
@@ -187,6 +188,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         ? runArgs(settings, { repo: this.repo, task: headless.task,
                               doneWhen: headless.doneWhen, json: true })
         : chatArgs(settings, { repo: this.repo, resume, json: true })),
+      // We can answer host_request events (editor diagnostics) — the CLI only offers
+      // the get_diagnostics tool to the model when a frontend advertises this.
+      "--host-tools",
     ];
     this.log.appendLine(`[start:${resolved.source}] ${resolved.command} ${args.join(" ")}`);
 
@@ -230,6 +234,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private async sendUser(text: string): Promise<void> {
     if (!text.trim()) return;
+    // Mid-turn, this is STEERING: the agent picks it up between steps and changes
+    // course, instead of the message queuing until the whole task finishes.
+    if (this.agent.running && this.inTurn) {
+      this.agent.send(text);
+      this.post({ type: "steering", text });
+      return;
+    }
     const folder = await pickFolder();
     if (!folder) return;
     if (!(await this.ensureStarted(folder))) return;
@@ -331,6 +342,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         for (const f of s.files_changed || []) this.changed.add(f);
         this.post({ type: "changed", files: [...this.changed] });
         this.onUsage(s.usage);
+        break;
+      }
+      case "host_request": {
+        // The agent wants something only the editor knows. Reply on stdin with its id.
+        const req = ev as any;
+        let result = "";
+        try {
+          result = req.kind === "diagnostics"
+            ? collectDiagnostics(this.repo, typeof req.path === "string" && req.path
+                                            ? req.path : undefined)
+            : `ERROR: unsupported host request '${req.kind}'`;
+        } catch (err) {
+          result = `ERROR: ${String(err)}`;
+        }
+        if (this.agent.running) this.agent.send(JSON.stringify({ id: req.id, result }));
         break;
       }
       case "error": {
