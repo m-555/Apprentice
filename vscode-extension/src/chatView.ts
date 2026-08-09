@@ -30,6 +30,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   /** True while a turn is in flight — an exit here is a CRASH, not a normal end. */
   private inTurn = false;
   private stoppedByUser = false;
+  /** An `error` event means the agent refused ON PURPOSE (dirty tree, bad provider).
+   *  The exit that follows is a clean shutdown, NOT a crash — don't cry wolf. */
+  private sawError = false;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -177,6 +180,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     this.repo = folder.uri.fsPath;
     this.changed.clear();
+    this.sawError = false;
     // Headless runs `apprentice run <task> --done-when <cmd>`; interactive runs `chat`.
     // Both stream the SAME --json protocol, so the panel renders them identically.
     const settings = headless?.autoApprove
@@ -206,7 +210,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       // Dying MID-TURN is a crash (Python traceback, OOM, killed process), not the
       // normal end of a session. Say so, and make the log one click away — otherwise
       // the panel just goes quiet and the user has no idea what happened.
-      const crashed = this.inTurn && !this.stoppedByUser;
+      const crashed = this.inTurn && !this.stoppedByUser && !this.sawError;
       this.post({
         type: "exit",
         crashed,
@@ -217,6 +221,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       });
       this.inTurn = false;
       this.stoppedByUser = false;
+      this.sawError = false;
       this.sessionInfo = undefined;
       void vscode.commands.executeCommand("setContext", "apprentice.running", false);
       this.onUsage(null);
@@ -361,6 +366,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
       case "error": {
         // The agent refuses a dirty/non-git tree — make that actionable instead of raw.
+        this.sawError = true;
         const text = String((ev as any).text || "");
         if (/uncommitted changes|not a git repository/i.test(text)) {
           void this.offerAllowDirty(text);
