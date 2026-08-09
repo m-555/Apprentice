@@ -29,6 +29,9 @@ _AGENT_PREAMBLE = """You are a careful software engineer working directly in a u
 repository, with tools to read, search, edit, and run things.
 
 How to work:
+- NOT EVERY MESSAGE IS A TASK. If the user greets you, asks what you can do, or asks a \
+question about the code, just answer in plain words and call NO tools. Only start \
+using tools when you have actually been asked to change or inspect something.
 - ORIENT FIRST: list/search/read before you edit. Never guess a file's contents.
 - Make the smallest change that does the job, and match the surrounding code's style.
 - Prefer edit_file (exact-string replacement) over rewriting a whole file.
@@ -81,6 +84,8 @@ class Session:
         # not in the conversation, so it survives context compaction — losing the plan
         # halfway through a long task is exactly how weak models drift.
         self.plan: list[dict[str, Any]] = []
+        #: What the user typed first, for the session picker's label (see add_user).
+        self.first_task = ""
         self.messages: list[dict[str, Any]] = [
             {"role": "system", "content": self._system_prompt()}]
         self.usage = {"tokens_in": 0, "tokens_out": 0, "est_cost_usd": 0.0, "turns": 0}
@@ -127,8 +132,16 @@ class Session:
         self.messages[0] = {"role": "system", "content": self._system_prompt()}
 
     # --- history ------------------------------------------------------------
-    def add_user(self, text: str) -> None:
+    def add_user(self, text: str, raw: str = "") -> None:
+        """`text` is what the model sees; `raw` is what the user actually typed.
+
+        They differ when retrieval prepends past lessons (see loop._with_past_corrections).
+        Session titles must quote the user, not the wrapper — otherwise every session in
+        the picker is titled "Here are past, SIMILAR tasks and their CORRECT solutions…".
+        """
         self.messages.append({"role": "user", "content": text})
+        if not self.first_task:
+            self.first_task = (raw or text).strip()[:80]
 
     def add_assistant(self, turn) -> None:
         msg: dict[str, Any] = {"role": "assistant", "content": turn.content or ""}
@@ -201,6 +214,7 @@ class Session:
             "id": self.id, "repo": self.repo, "provider": self.provider,
             "model": self.model, "verify": self.verify_policy,
             "test_cmd": self.test_cmd, "started": self.started, "plan": self.plan,
+            "first_task": self.first_task,
             "usage": self.usage, "messages": self.messages,
         }, ensure_ascii=False, indent=2), encoding="utf-8")
         return p
@@ -212,6 +226,7 @@ class Session:
         s = cls(data["repo"], cfg, data.get("provider", "qwen"), data.get("model", ""),
                 data.get("verify", "tests"), data.get("test_cmd", ""), data["id"])
         s.messages = data["messages"]
+        s.first_task = data.get("first_task", "")
         s.plan = data.get("plan", [])
         s.usage = data.get("usage", s.usage)
         return s
@@ -227,8 +242,17 @@ class Session:
                 data = json.loads(p.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, OSError):
                 continue
-            first = next((m.get("content", "") for m in data.get("messages", [])
-                          if m.get("role") == "user"), "")
+            # Sessions written before first_task existed fall back to the old scan —
+            # and those DO hold the retrieval-wrapped text, so strip it or every old
+            # row in the picker reads "Here are past, SIMILAR tasks…". Imported lazily:
+            # loop sits above session, and this is the only place that needs it.
+            try:
+                from . import loop as loop_mod
+            except ImportError:
+                import loop as loop_mod
+            first = data.get("first_task") or loop_mod.user_text_for_display(
+                next((m.get("content", "") for m in data.get("messages", [])
+                      if m.get("role") == "user"), ""))
             out.append({"id": data.get("id", p.stem), "repo": data.get("repo", ""),
                         "provider": data.get("provider", ""), "first_task": first[:80]})
             if len(out) >= limit:

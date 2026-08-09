@@ -6,6 +6,33 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed — the panel could not hold a conversation
+Four bugs that together made the VS Code panel unusable: it hung on the first message,
+Gemini died at the first tool call, a greeting triggered repo work, and resumed sessions
+came up blank.
+
+- **First message no longer deadlocks a `--json` session.** A frontend that writes the
+  user's message immediately after spawn (the panel does) got it classified as *steering*,
+  because nothing was awaiting input yet — and steering is only drained during a turn, so
+  the turn that would have drained it never started. The top-level prompt now accepts a
+  line that arrived before it opened; confirm prompts deliberately still don't, so a stale
+  steering line can never answer a y/n.
+- **Gemini 3 tool calls survive the next request.** Every `functionCall` carries an opaque
+  `thoughtSignature` that must be replayed when the call is sent back in history, or the
+  API rejects the whole request (`400 INVALID_ARGUMENT`). It is now kept on the `ToolCall`
+  and re-attached to the `Part`. OpenAI-compatible providers, which are handed history
+  verbatim and reject unknown fields, have it stripped.
+- **Retrieval has a relevance floor** (`retrieval.min_similarity`, default `0.5`).
+  Ranking alone always returned the k least-bad matches, so "hi" came back with five
+  unrelated coding examples labelled *past, SIMILAR tasks* — which is why a greeting made
+  the agent run tests. Below the floor, nothing is retrieved.
+- **Not every message is a task.** The system prompt now says so explicitly; it previously
+  read as an unbroken instruction to go edit code and run tests.
+- **Resumed sessions render their history.** A new `history` event replays the
+  conversation after `session_start`, so the panel no longer comes up empty on a session
+  that is in fact fully loaded. Session titles quote the user's own words again instead of
+  the retrieval preamble.
+
 ### Added — task list, editor diagnostics, steering, parallel tools
 - **Task list** (`set_plan` / `check_off`): a durable checklist kept on the session and
   re-rendered into the system prompt, so compaction can't lose it and `--resume` restores

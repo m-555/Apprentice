@@ -1275,6 +1275,72 @@ def test_stdin_broker_routes_answers_steering_and_host_replies():
         os.close(write_fd)
 
 
+def test_retrieval_floor_drops_irrelevant_examples():
+    """"hi" must retrieve NOTHING, or it primes the agent to go do repo work.
+
+    Ranking alone always returns the k least-bad matches, so a greeting came back with k
+    TypeScript corrections under a header claiming they were similar — which is why a
+    plain "hi" made the agent call run_tests.
+    """
+    import numpy as np
+    import retrieval
+
+    entries = [{"provider": "qwen", "role": "", "error_category": "compile",
+                "vector": [1.0, 0.0], "task": "close match"},
+               {"provider": "qwen", "role": "", "error_category": "none",
+                "vector": [0.0, 1.0], "task": "orthogonal"}]
+    old_load, old_embed = retrieval._load_index, retrieval._embed
+    retrieval._load_index = lambda: [dict(e) for e in entries]
+    try:
+        cfg = {"retrieval": {"enabled": True, "top_k": 5, "role_filter": False,
+                             "min_similarity": 0.5}}
+
+        # A query aligned with entry 1: it passes the floor, the orthogonal one does not.
+        retrieval._embed = lambda text, c: np.asarray([1.0, 0.0], dtype=np.float32)
+        hits = retrieval.retrieve("close match", "qwen", "", cfg)
+        assert [h["task"] for h in hits] == ["close match"], hits
+
+        # A query similar to NOTHING (negative cosine with both) returns nothing —
+        # not a backfilled top_k.
+        retrieval._embed = lambda text, c: np.asarray([-0.7071, -0.7071],
+                                                      dtype=np.float32)
+        assert retrieval.retrieve("hi, who am i talking to?", "qwen", "", cfg) == []
+
+        # The floor is configurable: drop it and the old behaviour returns.
+        cfg["retrieval"]["min_similarity"] = -1.0
+        assert len(retrieval.retrieve("hi", "qwen", "", cfg)) == 2
+    finally:
+        retrieval._load_index, retrieval._embed = old_load, old_embed
+
+
+def test_session_title_and_history_use_the_users_own_words():
+    """The retrieval wrapper must never be shown to a human as if the user typed it."""
+    import chat_ui
+    import loop as loop_mod
+    import session as sess_mod
+
+    wrapped = ("Here are past, SIMILAR tasks and their CORRECT solutions:\n[Example 1]\n"
+               + loop_mod.LESSONS_SEPARATOR + "hi, who am i talking to?")
+    assert loop_mod.user_text_for_display(wrapped) == "hi, who am i talking to?"
+    assert loop_mod.user_text_for_display("plain message") == "plain message"
+
+    s = object.__new__(sess_mod.Session)
+    s.messages, s.first_task, s.id = [], "", "abc123"
+    s.add_user(wrapped, raw="hi, who am i talking to?")
+    assert s.first_task == "hi, who am i talking to?"     # picker label, not the wrapper
+    assert s.messages[0]["content"] == wrapped            # the model still gets lessons
+
+    # The resume replay strips it too, and flattens tool calls for the panel.
+    s.messages.append({"role": "assistant", "content": "",
+                       "tool_calls": [{"function": {"name": "run_tests"}}]})
+    s.messages.append({"role": "tool", "name": "run_tests", "content": "3 passed"})
+    ev = chat_ui._history_event(s)
+    assert ev["type"] == "history"
+    assert ev["messages"][0] == {"role": "user", "text": "hi, who am i talking to?"}
+    assert ev["messages"][1]["tools"] == ["run_tests"]
+    assert ev["messages"][2] == {"role": "tool", "tool": "run_tests", "text": "3 passed"}
+
+
 def test_vertex_replays_thought_signature_on_the_next_request():
     """Gemini 3 rejects a follow-up whose functionCall lost its thought_signature.
 

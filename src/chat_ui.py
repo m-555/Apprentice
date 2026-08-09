@@ -359,6 +359,42 @@ def _session_start_event(sess, verifier) -> dict[str, Any]:
             "verify": verifier.policy, "test_cmd": sess.test_cmd}
 
 
+def _history_event(sess, max_text: int = 4000) -> dict[str, Any]:
+    """The conversation so far, flattened for a UI to re-render after `--resume`.
+
+    A resumed session used to come up BLANK: the agent held the full history, but the
+    protocol had no way to say what it was, so a frontend that cleared its transcript on
+    resume had nothing to draw. Tool results are trimmed hard — this is for showing a
+    human where they left off, not for reconstructing the model's exact context.
+    """
+    items: list[dict[str, Any]] = []
+    for m in sess.messages:
+        role = m.get("role")
+        if role == "system":
+            continue
+        if role == "user":
+            items.append({"role": "user",
+                          "text": loop.user_text_for_display(m.get("content") or "")})
+        elif role == "assistant":
+            entry: dict[str, Any] = {"role": "assistant", "text": m.get("content") or ""}
+            tools = [tc.get("function", {}).get("name", "")
+                     for tc in (m.get("tool_calls") or [])]
+            if tools:
+                entry["tools"] = [t for t in tools if t]
+            if entry["text"] or entry.get("tools"):
+                items.append(entry)
+        elif role == "tool":
+            items.append({"role": "tool", "tool": m.get("name") or "",
+                          "text": (m.get("content") or "")[:400]})
+    total = 0
+    for item in reversed(items):                 # keep the RECENT end under the cap
+        total += len(item.get("text") or "")
+        if total > max_text:
+            items = items[items.index(item) + 1:]
+            break
+    return {"type": "history", "session_id": sess.id, "messages": items}
+
+
 def _session_end_event(sess, verifier, extra: dict[str, Any] | None = None
                        ) -> dict[str, Any]:
     files = sorted({verifier._rel(s.path) for snaps in verifier.history for s in snaps})
@@ -414,6 +450,8 @@ def chat(repo: str, cfg: dict[str, Any], provider: str, model: str = "",
 
     if json_mode:
         emit({**_session_start_event(sess, verifier), "resumed": bool(resume)})
+        if resume:
+            emit(_history_event(sess))
     else:
         _out(f"\nApprentice agent | repo={repo}")
         _out(f"provider={sess.provider}{('/' + sess.model) if sess.model else ''} | "

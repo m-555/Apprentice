@@ -3,6 +3,22 @@
 All notable changes to the extension. The [Apprentice agent](https://github.com/m-555/Apprentice)
 itself is versioned separately; see its `CHANGELOG.md`.
 
+## [0.1.3] — 2026-08-09
+
+### Fixed
+
+- **Resuming a session no longer shows an empty panel.** The transcript was cleared on
+  resume and nothing redrew it, because the protocol had no way to say what had been said.
+  The agent now sends a `history` event after `session_start`, and the panel replays the
+  conversation between *earlier in this session* / *resumed here* markers.
+
+### Notes
+
+- Needs the matching agent build. Three fixes that make the panel usable live on the
+  Python side: the first message no longer deadlocks the session, Gemini tool calls no
+  longer fail on the following request, and a plain greeting no longer sets the agent off
+  running tests. See the agent's `CHANGELOG.md`.
+
 ## [0.1.0] — 2026-07-25
 
 First release. A frontend for the Apprentice agent — it spawns the CLI and renders its

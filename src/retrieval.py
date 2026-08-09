@@ -87,7 +87,15 @@ def _cosine(query: np.ndarray, mat: np.ndarray) -> np.ndarray:
 
 
 def retrieve(task: str, provider: str, role: str, cfg: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return up to top_k similar past corrections for (provider, role)."""
+    """Return up to top_k SIMILAR past corrections for (provider, role).
+
+    "Similar" is enforced, not assumed. Ranking alone always returns the k least-bad
+    matches, so an unrelated message ("hi") used to come back with k coding examples
+    under a header claiming they were similar — which primed the agent to go do repo
+    work instead of answering. min_similarity is the floor below which we return
+    nothing at all. Measured on nomic-embed-text: chit-chat peaks around 0.48, real
+    coding requests start around 0.53, so 0.5 separates them.
+    """
     rcfg = cfg.get("retrieval", {})
     if not rcfg.get("enabled", True):
         return []
@@ -95,6 +103,7 @@ def retrieve(task: str, provider: str, role: str, cfg: dict[str, Any]) -> list[d
     role_filter = bool(rcfg.get("role_filter", True))
     prefer = bool(rcfg.get("prefer_error_categories", True))
     mix = float(rcfg.get("mistake_vs_correct_mix", 0.7))
+    floor = float(rcfg.get("min_similarity", 0.5))
 
     entries = _load_index()
     cand = [
@@ -111,6 +120,11 @@ def retrieve(task: str, provider: str, role: str, cfg: dict[str, Any]) -> list[d
     sims = _cosine(qv, mat)
     for e, s in zip(cand, sims):
         e["_sim"] = float(s)
+    # Drop everything under the floor BEFORE the mistake/correct mixing below, so the
+    # backfill can only ever reach for records that are themselves relevant.
+    cand = [e for e in cand if e["_sim"] >= floor]
+    if not cand:
+        return []
     cand.sort(key=lambda e: e["_sim"], reverse=True)
 
     if not prefer:

@@ -138,10 +138,32 @@
   // `text`. We append deltas into one live bubble and drop the duplicate `text`.
   let streamBubble = null;
 
+  // A resumed session replays what was said before. Without this the panel came up
+  // blank on resume — the agent had the whole conversation, the UI had nothing to draw.
+  function renderHistory(items) {
+    if (!items || !items.length) return;
+    add(el("div", "badge info", "— earlier in this session —"));
+    for (const m of items) {
+      if (m.role === "user") {
+        add(el("div", "msg user", m.text || ""));
+      } else if (m.role === "assistant") {
+        if (m.text) add(el("div", "msg assistant", m.text));
+        for (const t of m.tools || []) add(el("div", "tool", t));
+      } else if (m.role === "tool") {
+        add(el("div", "tool-output", m.text || "(no output)"));
+      }
+    }
+    add(el("div", "badge info", "— resumed here —"));
+    log.scrollTop = log.scrollHeight;
+  }
+
   function renderEvent(ev) {
     switch (ev.type) {
       case "user":
         add(el("div", "msg user", ev.text));
+        break;
+      case "history":
+        renderHistory(ev.messages);
         break;
       case "text_delta": {
         setWorking(false);

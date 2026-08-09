@@ -68,6 +68,11 @@ def _call_signature(call) -> str:
         return f"{call.name}:{call.args!r}"
 
 
+#: Marks where the retrieval preamble ends and the user's own words begin. Shared so
+#: display code can strip it back off (see user_text_for_display).
+LESSONS_SEPARATOR = "--- END OF PAST LESSONS ---\n\nNow, the actual request:\n"
+
+
 def _with_past_corrections(session, cfg: dict[str, Any], user_text: str) -> str:
     """Prepend lessons from this project's corrections store to the user's request.
 
@@ -86,10 +91,20 @@ def _with_past_corrections(session, cfg: dict[str, Any], user_text: str) -> str:
         block = retrieval.format_fewshot(hits, max_solution_chars=600)
         if not block:
             return user_text
-        return (f"{block}\n--- END OF PAST LESSONS ---\n\n"
-                f"Now, the actual request:\n{user_text}")
+        return f"{block}\n{LESSONS_SEPARATOR}{user_text}"
     except Exception:
         return user_text
+
+
+def user_text_for_display(content: str) -> str:
+    """The user's own words, with any retrieval preamble stripped back off.
+
+    History stores the wrapped text (the model needs the lessons), so anything that
+    shows a past message to a HUMAN — the session picker, the panel's resume replay —
+    must undo the wrapping or it displays a wall of unrelated code examples.
+    """
+    _, sep, after = content.partition(LESSONS_SEPARATOR)
+    return after if sep else content
 
 
 def _record_usage(session, usage: dict[str, Any], provider: str, model: str) -> None:
@@ -122,7 +137,7 @@ def run_turn(session, verifier: verify_mod.Verifier, registry: dict[str, tools_m
     escalate_after = int(chat_cfg.get("escalate_after_failed_verifies", 2))
 
     if user_text is not None:
-        session.add_user(_with_past_corrections(session, cfg, user_text))
+        session.add_user(_with_past_corrections(session, cfg, user_text), raw=user_text)
 
     schemas = tools_mod.schemas(registry)
     failed_verifies = 0

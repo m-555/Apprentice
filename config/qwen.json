@@ -120,9 +120,11 @@
     "_comment": "Phase 5 in-context retrieval tunables.",
     "enabled": true,
     "top_k": 5,
+    "min_similarity": 0.5,
     "role_filter": true,
     "prefer_error_categories": true,
-    "mistake_vs_correct_mix": 0.7
+    "mistake_vs_correct_mix": 0.7,
+    "_min_similarity_note": "Cosine floor below which NOTHING is retrieved. top_k alone always returns the k least-bad matches, so an unrelated message ('hi') came back with k coding examples labelled 'past, SIMILAR tasks' and primed the agent to go do repo work. Measured on nomic-embed-text against this store: chit-chat peaks ~0.48, real coding requests start ~0.53. Raise it if the agent still cites irrelevant examples; lower it if it stops citing relevant ones."
   },
   "gate": {
     "_comment": "\u00a76.1 mechanical gate + worker->worker auto-retry. Runs entirely in-pipeline (no Claude tokens): checks a worker's output, and on failure bounces the verbatim error back to the worker up to max_retries times. Python is reliable in isolation; TS is off by default (snippets miss imports); C++ (UE) is deferred to the \u00a79 host-harness (full builds too slow per-task).",

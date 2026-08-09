@@ -83,6 +83,22 @@ export interface TextDeltaEvent extends BaseEvent {
   text: string;
 }
 
+/**
+ * The conversation so far, sent once right after `session_start` when `--resume` loaded
+ * an existing session. A frontend that clears its transcript on resume redraws from this;
+ * tool output is already trimmed agent-side, so render it as-is.
+ */
+export interface HistoryEvent extends BaseEvent {
+  type: "history";
+  session_id: string;
+  messages: {
+    role: "user" | "assistant" | "tool";
+    text?: string;
+    tools?: string[];
+    tool?: string;
+  }[];
+}
+
 export interface TurnEndEvent extends BaseEvent {
   type: "turn_end";
   usage: Usage;
@@ -102,6 +118,7 @@ export type AgentEvent =
   | ConfirmRequestEvent
   | TextEvent
   | TextDeltaEvent
+  | HistoryEvent
   | TurnEndEvent
   | AckEvent
   | BaseEvent;

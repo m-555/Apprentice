@@ -2,7 +2,7 @@
   "name": "apprentice-vscode",
   "displayName": "Apprentice",
   "description": "A coding agent driven by your own model (local or cloud) \u2014 every edit machine-verified against your tests, and reverted if it breaks them.",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "publisher": "m-555",
   "license": "MIT",
   "repository": {
