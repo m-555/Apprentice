@@ -22,6 +22,7 @@ Two tool protocols, chosen by `providers.<name>.tool_protocol`:
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -37,11 +38,21 @@ except ImportError:
     import providers
 
 
+#: Private key on an OpenAI-shaped tool_call dict, carrying Gemini's opaque per-call
+#: thought signature (base64 of the SDK's bytes, so transcripts stay JSON). Gemini 3
+#: hard-rejects a follow-up request whose functionCall parts have lost it, so it must
+#: survive the round-trip through history. Providers that are sent history verbatim
+#: strip it — see `_without_private_keys`.
+SIGNATURE_KEY = "_thought_signature"
+
+
 @dataclass
 class ToolCall:
     id: str
     name: str
     args: dict[str, Any] = field(default_factory=dict)
+    #: Opaque provider state to replay on the next request (Gemini only; base64 str).
+    thought_signature: str | None = None
 
 
 @dataclass
@@ -52,6 +63,25 @@ class AssistantTurn:
     @property
     def wants_tools(self) -> bool:
         return bool(self.tool_calls)
+
+
+def _without_private_keys(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """History minus our private per-call bookkeeping (see SIGNATURE_KEY).
+
+    Only for providers we hand the history to VERBATIM: OpenAI-compatible endpoints
+    reject unknown fields inside `tool_calls[]` outright, so a Gemini-flavoured session
+    that later switches provider — the escalation ladder does exactly that — would 400.
+    Providers that translate history into their own wire shape never see these keys.
+    Copies only the messages that carry one; the rest are passed through untouched.
+    """
+    out = []
+    for m in messages:
+        calls = m.get("tool_calls")
+        if calls and any(SIGNATURE_KEY in tc for tc in calls):
+            m = {**m, "tool_calls": [{k: v for k, v in tc.items() if k != SIGNATURE_KEY}
+                                     for tc in calls]}
+        out.append(m)
+    return out
 
 
 def _coerce_args(raw: Any) -> dict[str, Any]:
@@ -343,7 +373,8 @@ def _chat_openai(name: str, messages: list[dict[str, Any]], tools: list[dict[str
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
-    body: dict[str, Any] = {"model": model_id, "messages": messages}
+    body: dict[str, Any] = {"model": model_id,
+                            "messages": _without_private_keys(messages)}
     if tools:
         body["tools"] = tools
     opts = providers._sampling_options(p)
@@ -426,8 +457,14 @@ def _chat_vertex(name: str, messages: list[dict[str, Any]], tools: list[dict[str
                 parts.append(types.Part.from_text(text=m["content"]))
             for tc in (m.get("tool_calls") or []):
                 fn = tc.get("function", tc)
-                parts.append(types.Part.from_function_call(
-                    name=fn.get("name", ""), args=_coerce_args(fn.get("arguments"))))
+                part = types.Part.from_function_call(
+                    name=fn.get("name", ""), args=_coerce_args(fn.get("arguments")))
+                # Replay the signature the model gave us for THIS call, or Gemini 3
+                # rejects the whole request rather than just ignoring the omission.
+                sig = tc.get(SIGNATURE_KEY)
+                if sig:
+                    part.thought_signature = base64.b64decode(sig)
+                parts.append(part)
             if parts:
                 contents.append(types.Content(role="model", parts=parts))
         else:
@@ -463,7 +500,11 @@ def _chat_vertex(name: str, messages: list[dict[str, Any]], tools: list[dict[str
         for i, part in enumerate(getattr(cand.content, "parts", None) or []):
             fc = getattr(part, "function_call", None)
             if fc is not None:
-                calls.append(ToolCall(_new_id("vtx", i), fc.name, dict(fc.args or {})))
+                # Keep the signature: Gemini 3 refuses the follow-up request (400
+                # INVALID_ARGUMENT) if the functionCall it gets back has lost it.
+                sig = getattr(part, "thought_signature", None)
+                calls.append(ToolCall(_new_id("vtx", i), fc.name, dict(fc.args or {}),
+                                      base64.b64encode(sig).decode() if sig else None))
             elif getattr(part, "text", None):
                 text_parts.append(part.text)
     return AssistantTurn("".join(text_parts), calls)

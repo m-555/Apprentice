@@ -1275,6 +1275,80 @@ def test_stdin_broker_routes_answers_steering_and_host_replies():
         os.close(write_fd)
 
 
+def test_vertex_replays_thought_signature_on_the_next_request():
+    """Gemini 3 rejects a follow-up whose functionCall lost its thought_signature.
+
+    Real symptom: `400 INVALID_ARGUMENT ... Function call is missing a thought_signature
+    in functionCall parts ... function call default_api.run_tests` — every tool-using
+    Gemini turn died on the request AFTER the first tool call. The signature must survive
+    response -> ToolCall -> history -> the next request's Part. Uses the REAL google-genai
+    types so this checks the actual SDK field, not our idea of it.
+    """
+    import base64
+
+    try:
+        import google.genai as genai_mod
+        from google.genai import types
+    except ImportError:                       # optional dependency
+        print("SKIP vertex thought_signature (google-genai not installed)")
+        return
+
+    import chat_providers as cp
+
+    SIG = b"\x01signed-thought\xff"
+    sent: dict = {}
+
+    class _FakeModels:
+        def generate_content(self, model, contents, config):
+            sent["contents"] = contents
+            part = types.Part(
+                function_call=types.FunctionCall(name="run_tests", args={"path": "."}),
+                thought_signature=SIG)
+            return types.GenerateContentResponse(candidates=[types.Candidate(
+                content=types.Content(role="model", parts=[part]))])
+
+    class _FakeClient:
+        def __init__(self, **kw):
+            self.models = _FakeModels()
+
+    cfg = {"providers": {"gemini": {"enabled": True, "kind": "vertex",
+                                    "project": "p", "model": "gemini-3.5-flash"}}}
+    old_client = genai_mod.Client
+    genai_mod.Client = _FakeClient
+    try:
+        # 1) the signature comes back off the wire and onto the ToolCall
+        turn = cp._chat_vertex("gemini", [{"role": "user", "content": "run the tests"}],
+                               [], cfg, None, "")
+        assert len(turn.tool_calls) == 1
+        call = turn.tool_calls[0]
+        assert base64.b64decode(call.thought_signature) == SIG
+
+        # 2) history keeps it — and ONLY when the provider issued one
+        sess_msg = {"role": "assistant", "content": "",
+                    "tool_calls": [{"id": call.id, "type": "function",
+                                    "function": {"name": call.name,
+                                                 "arguments": json.dumps(call.args)},
+                                    cp.SIGNATURE_KEY: call.thought_signature}]}
+
+        # 3) the next request carries it back on the functionCall part
+        cp._chat_vertex("gemini", [{"role": "user", "content": "run the tests"}, sess_msg,
+                                   {"role": "tool", "name": "run_tests",
+                                    "content": "3 passed"}],
+                        [], cfg, None, "")
+        model_turns = [c for c in sent["contents"] if c.role == "model"]
+        assert model_turns, "assistant turn missing from the replayed history"
+        fc_parts = [p for p in model_turns[0].parts if p.function_call is not None]
+        assert fc_parts and fc_parts[0].thought_signature == SIG, \
+            "thought_signature was not replayed onto the functionCall part"
+
+        # 4) OpenAI-compatible endpoints get history verbatim and reject unknown keys
+        clean = cp._without_private_keys([sess_msg])
+        assert cp.SIGNATURE_KEY not in clean[0]["tool_calls"][0]
+        assert cp.SIGNATURE_KEY in sess_msg["tool_calls"][0]   # original untouched
+    finally:
+        genai_mod.Client = old_client
+
+
 def test_stdin_broker_first_message_sent_before_the_prompt_is_not_stranded():
     """A frontend that writes the first message straight after spawn must not deadlock.
 

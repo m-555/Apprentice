@@ -18,8 +18,9 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from . import deliver, paths, tools as tools_mod
+    from . import chat_providers, deliver, paths, tools as tools_mod
 except ImportError:
+    import chat_providers
     import deliver
     import paths
     import tools as tools_mod
@@ -134,7 +135,11 @@ class Session:
         if turn.tool_calls:
             msg["tool_calls"] = [
                 {"id": tc.id, "type": "function",
-                 "function": {"name": tc.name, "arguments": json.dumps(tc.args)}}
+                 "function": {"name": tc.name, "arguments": json.dumps(tc.args)},
+                 # Only present for providers that issue one (Gemini), so histories
+                 # from every other provider serialize exactly as they always did.
+                 **({chat_providers.SIGNATURE_KEY: tc.thought_signature}
+                    if getattr(tc, "thought_signature", None) else {})}
                 for tc in turn.tool_calls]
         self.messages.append(msg)
 
