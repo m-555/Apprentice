@@ -123,11 +123,28 @@ class StdinBroker:
             # (plain input() used to raise EOFError here and callers rely on that).
             self._answers.put(_EOF)
 
-    def ask_line(self, timeout: float | None = None) -> str:
+    def ask_line(self, timeout: float | None = None, *,
+                 accept_pending: bool = False) -> str:
         """Block for the user's answer to a prompt we just emitted.
-        Raises EOFError when stdin has closed, mirroring `input()`."""
+        Raises EOFError when stdin has closed, mirroring `input()`.
+
+        `accept_pending` also takes a line that arrived BEFORE we started awaiting.
+        Lines are routed at arrival time, so anything sent while no prompt was open sits
+        in the steering queue — including the very first message from a frontend that
+        writes it straight after spawn, before Python has reached its first prompt (the
+        VS Code panel does exactly that). With no turn running to drain steering, that
+        line was stranded and the session blocked forever. Only the top-level chat
+        prompt sets this: between turns there is nothing to steer, so an early line is
+        plainly the user's message. Confirm prompts leave it False — a stale steering
+        line must never stand in for a y/n answer.
+        """
         self._awaiting.set()
         try:
+            if accept_pending:
+                try:
+                    return self._steer.get_nowait()
+                except queue.Empty:
+                    pass
             value = self._answers.get(timeout=timeout)
         except queue.Empty:
             return ""
@@ -408,7 +425,7 @@ def chat(repo: str, cfg: dict[str, Any], provider: str, model: str = "",
 
     while True:
         try:
-            line = (broker.ask_line() if broker
+            line = (broker.ask_line(accept_pending=True) if broker
                     else input("you > ")).strip()
         except (EOFError, KeyboardInterrupt):
             if not json_mode:

@@ -1275,6 +1275,48 @@ def test_stdin_broker_routes_answers_steering_and_host_replies():
         os.close(write_fd)
 
 
+def test_stdin_broker_first_message_sent_before_the_prompt_is_not_stranded():
+    """A frontend that writes the first message straight after spawn must not deadlock.
+
+    The VS Code panel spawns `apprentice chat --json` and writes the user's message
+    immediately — well before Python has reached its first `ask_line()`. That line
+    therefore arrives while nothing is awaited and lands in the steering queue, but no
+    turn is running to consume it: the chat loop blocked on `ask_line()` forever and the
+    panel sat at "working..." with the model never contacted. The top-level prompt must
+    adopt such an early line; a confirm prompt must NOT (a stale steering line answering
+    a y/n would be an unintended approval).
+    """
+    import contextlib
+    import io
+    import os
+    import time
+    import chat_ui
+
+    read_fd, write_fd = os.pipe()
+    old_stdin = sys.stdin
+    sys.stdin = os.fdopen(read_fd, encoding="utf-8")
+
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            broker = chat_ui.StdinBroker()
+
+            # Arrives BEFORE any ask_line() — exactly the extension's spawn/write race.
+            os.write(write_fd, b"add a null check to parse()\n")
+            time.sleep(0.2)                       # let the pump route it to steering
+
+            # The chat loop's prompt picks it up instead of blocking forever.
+            assert broker.ask_line(5, accept_pending=True) == "add a null check to parse()"
+
+            # A confirm prompt never adopts a pending steering line.
+            os.write(write_fd, b"stop using regex\n")
+            time.sleep(0.2)
+            assert broker.ask_line(0.3) == ""     # timed out rather than auto-answering
+            assert broker.take_steering() == "stop using regex"
+    finally:
+        sys.stdin = old_stdin
+        os.close(write_fd)
+
+
 # --- streaming ---------------------------------------------------------------
 def test_stream_tool_call_accumulator():
     """OpenAI streams tool calls in fragments keyed by index — they must reassemble."""
