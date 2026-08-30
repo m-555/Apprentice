@@ -11,30 +11,21 @@ Windows paths are used throughout (that's this machine). On macOS/Linux swap
 
 ## Step 0 — start the model server (do this first, every time)
 
-Apprentice talks to **Ollama**, which must be running.
+Apprentice talks to the shared **llama.cpp supervisor**, which must be running.
 
 ```powershell
-ollama serve
+cd E:\projects\local-opencode
+.\scripts\start-router.ps1
 ```
 
 Leave that window open. Check it answers:
 
 ```powershell
-curl http://127.0.0.1:11434/api/version
+curl http://127.0.0.1:8080/health
 ```
 
-> **If that fails with "actively refused":** Windows has reserved the port. This has
-> already happened twice on this machine (11434, then 11800). Pick a free high port and
-> use it consistently:
-> ```powershell
-> $env:OLLAMA_HOST="127.0.0.1:21434"
-> ollama serve
-> ```
-> then set the same address in `config\qwen.local.json`:
-> ```json
-> { "runner": { "host": "http://127.0.0.1:21434" } }
-> ```
-> **Your config currently points at 11800, which is dead — fix this before anything else.**
+The endpoint is loopback-only. Its first request for a model can take time because the
+supervisor maps the weights on demand; later requests reuse the loaded model.
 
 Check the rest of your setup in one command:
 
@@ -42,7 +33,8 @@ Check the rest of your setup in one command:
 E:\projects\qwen-pipeline\.venv\Scripts\python.exe E:\projects\qwen-pipeline\src\cli.py doctor
 ```
 
-You want: `ollama : Ollama reachable …` and `providers : enabled = qwen`.
+You want: `runtime : llama.cpp supervisor reachable …` and
+`providers : enabled = qwen`.
 
 ---
 
@@ -217,7 +209,7 @@ green/red verification badges, and clickable changed files that open a diff. Run
 
 | Symptom | Cause / fix |
 |---|---|
-| "Could not reach Ollama" | `ollama serve` isn't running, or the port in your config is wrong (see Step 0) |
+| "Could not reach provider 'qwen'" | Start `E:\projects\local-opencode\scripts\start-router.ps1` and check port 8080 (see Step 0). |
 | "not a git repository" | `git init` in the folder — git is the agent's undo |
 | "working tree has uncommitted changes" | Commit or stash first, so you can tell your edits from the agent's |
 | Agent keeps failing the same way | It's a weak model — after 3 identical attempts it gets told to change approach; if it still fails, take the task yourself or split it smaller |

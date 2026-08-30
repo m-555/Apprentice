@@ -26,7 +26,8 @@ not a provider). Three built-ins:
 
 | Provider | Runtime | Notes |
 |----------|---------|-------|
-| `qwen`   | local Ollama | Default. Free, GPU-local. |
+| `qwen`   | local llama.cpp | Default Qwen 3.8 worker. Free and loopback-only. |
+| `qwen_coder` | local llama.cpp | Optional Qwen Coder worker; slower on the current compatible runtime. |
 | `gemini` | Vertex AI | Two tiers, `flash` (routine) / `pro` (hard), picked per call via the `model` arg. |
 | `openai` | OpenAI API | GPT/Codex — set `model`, export `OPENAI_API_KEY`, set `enabled: true`. |
 
@@ -39,7 +40,7 @@ Any entry under `providers.<name>` with a known `kind` becomes a valid `provider
   OpenRouter, Mistral, LM Studio, vLLM, llama.cpp server**… Configure `base_url`, `model`
   (or a `models` tier map + `default_model`), and `api_key_env` (the **name of the env var**
   holding the key — keys never go in config files; local endpoints can omit the key entirely).
-- **`ollama-local`** — another local Ollama model (`host`, `model`, `keep_alive`, `options`).
+- **`ollama-local`** — deprecated compatibility for an older local Ollama config.
 - **`vertex-ai`** — a second Vertex entry, same shape as `gemini`.
 
 Example (`config/qwen.local.json`):
@@ -158,7 +159,7 @@ and must **exit 0** to count as passing.
 
 | Block | Purpose |
 |-------|---------|
-| `runner` / `worker_model` / `keep_alive` / `offload` | Ollama host, the local model tag, warm-keep window, expert-offload notes. |
+| `runner` / `worker_model` / `embedding_model` | Shared llama.cpp supervisor endpoint and local model identifiers. |
 | `retrieval` | In-context few-shot retrieval of past corrections (`top_k`, `role_filter`, mix). |
 | `gate` | Per-language mechanical gate (Python `py_compile`, TS `tsc`, C++ heuristic lint) + `max_retries`. |
 | `delegate` | Token-cheap delegate options: `context_max_file_kb`/`context_max_total_kb` (server-side `context_files` caps), `test_timeout_s` (the `apply_to`+`test_cmd` acceptance run), `return_mode` default. |

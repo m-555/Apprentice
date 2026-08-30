@@ -2,6 +2,42 @@
   "_comment": "TEMPLATE. Copy this file to `config/qwen.local.json` (gitignored) and fill in real values. At load time the server DEEP-MERGES qwen.local.json OVER qwen.json, so put ALL secrets, your GCP project id, credential paths, exact model ids, and `enabled` flags here — never in the committed qwen.json. Delete keys you don't override.",
 
   "providers": {
+    "qwen": {
+      "_note": "Default Apprentice worker through the sibling local-opencode llama.cpp supervisor.",
+      "enabled": true,
+      "kind": "openai-compatible",
+      "base_url": "http://127.0.0.1:8080/v1",
+      "model": "qwen3.8-27b-q8-tuber",
+      "timeout_s": 1800,
+      "options": {"temperature": 0.15, "top_p": 0.9}
+    },
+    "qwen_coder": {
+      "_note": "Opt-in Qwen Coder through standalone llama.cpp; currently slower than Qwen 3.8 on this machine.",
+      "enabled": true,
+      "kind": "openai-compatible",
+      "base_url": "http://127.0.0.1:8080/v1",
+      "model": "qwen3-coder-next-q4-k-m",
+      "timeout_s": 1800,
+      "options": {"temperature": 0.15, "top_p": 0.9}
+    },
+    "local_qwen38": {
+      "_note": "Local Qwen through the sibling local-opencode llama.cpp router. No real API key is required because the endpoint is loopback-only.",
+      "enabled": false,
+      "kind": "openai-compatible",
+      "base_url": "http://127.0.0.1:8080/v1",
+      "model": "qwen3.8-27b-q8-tuber",
+      "timeout_s": 1800,
+      "options": {"temperature": 0.15, "top_p": 0.9}
+    },
+    "local_deepseek_v4": {
+      "_note": "Opt-in very large local reviewer through the same router. Expect model switching and slow generation on machines below 128 GB RAM.",
+      "enabled": false,
+      "kind": "openai-compatible",
+      "base_url": "http://127.0.0.1:8080/v1",
+      "model": "deepseek-v4-flash-0731-ud-iq2-m",
+      "timeout_s": 3600,
+      "options": {"temperature": 0.1, "top_p": 0.95}
+    },
     "openai": {
       "_note": "GPT/Codex. Export OPENAI_API_KEY (never put keys in config), set the model, flip enabled.",
       "enabled": false,
@@ -39,6 +75,20 @@
 
   "agent": {
     "models": {
+      "qwen": {
+        "model": "openai/qwen3.8-27b-q8-tuber",
+        "env": {
+          "OPENAI_API_BASE": "http://127.0.0.1:8080/v1",
+          "OPENAI_API_KEY": "local-loopback-only"
+        }
+      },
+      "qwen_coder": {
+        "model": "openai/qwen3-coder-next-q4-k-m",
+        "env": {
+          "OPENAI_API_BASE": "http://127.0.0.1:8080/v1",
+          "OPENAI_API_KEY": "local-loopback-only"
+        }
+      },
       "gemini": {
         "default_model": "flash",
         "models": {

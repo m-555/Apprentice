@@ -1,7 +1,7 @@
 # Apprentice
 
 **A local, multi-provider code-delegation pipeline.** A master orchestrator (e.g. Claude Code)
-delegates routine coding to *apprentice* models — a **local model on your own GPU** (via Ollama),
+delegates routine coding to *apprentice* models — a **local model on your own machine** (via llama.cpp),
 **Gemini** (Vertex AI), **GPT/Codex** (OpenAI), or **any OpenAI-compatible endpoint** (Groq,
 OpenRouter, LM Studio, vLLM, …) — then mechanically verifies, corrects, and *learns* from the
 results over time via in-context retrieval. The expensive brain is spent on judgment; the cheap
@@ -58,7 +58,7 @@ orchestrator reviews the output.
         └───┬───────────────┬───────────────┬────────────┘
             ▼               ▼               ▼
          qwen            gemini        openai + any
-      (Ollama,        (Vertex AI:    openai-compatible
+      (llama.cpp,      (Vertex AI:    openai-compatible
        local GPU,      flash / pro,   endpoint (GPT/Codex,
        FREE)           metered $)     Groq, LM Studio, …)
 ```
@@ -77,13 +77,13 @@ The "specialized agents" (test writer, C++ implementer, …) are **not** separat
 ## Requirements
 
 - **Python 3.11+**
-- **[Ollama](https://ollama.com)** running locally, with a worker model + an embedder pulled.
+- The sibling **Local OpenCode Platform** and its llama.cpp supervisor running locally.
 - *(optional, for the `assign` file-aware agent)* **[Aider](https://aider.chat)** in its own venv.
 - *(optional, for the Gemini worker)* `google-genai` + Google Cloud **Vertex AI** credentials.
 - An **MCP-capable orchestrator** (e.g. Claude Code) to drive the tools.
 
-The reference machine is an RTX 5090 (32 GB VRAM) + 64 GB RAM, but the pipeline runs anywhere
-Ollama can serve a model — scale the worker model to your hardware.
+The reference machine is an RTX 5090 (32 GB VRAM) + 64 GB RAM. Model size and
+quantization still need to fit your GPU/RAM/storage budget.
 
 ## Getting started
 
@@ -92,12 +92,12 @@ Ollama can serve a model — scale the worker model to your hardware.
 ```bash
 pipx install git+https://github.com/m-555/Apprentice.git   # or: pip install apprentice-pipeline
 apprentice init      # creates the data home (~/.apprentice or $APPRENTICE_HOME),
-                     # seeds the config, checks Ollama, prints the MCP registration cmd
+                     # seeds config, checks the local runtime, prints the MCP command
 apprentice doctor    # environment check any time
 
-# pull the worker + embedder models (scale the worker to your hardware)
-ollama pull qwen3-coder-next
-ollama pull nomic-embed-text
+# start the local model endpoint in another terminal
+cd E:\projects\local-opencode
+.\scripts\start-router.ps1
 
 # register with your orchestrator (Claude Code example; `init` prints this too)
 claude mcp add --scope local qwen -- apprentice serve
@@ -118,9 +118,10 @@ python -m venv .venv
 .venv/Scripts/pip install -r requirements.txt          # Windows
 # .venv/bin/pip install -r requirements.txt             # Linux/macOS
 
-# 2. pull the worker + embedder models (sizes approximate)
-ollama pull qwen3-coder-next        # ~51 GB, Q4_K_M — scale down for smaller GPUs
-ollama pull nomic-embed-text        # ~274 MB — for retrieval
+# 2. start the sibling llama.cpp supervisor in another terminal
+cd E:\projects\local-opencode
+.\scripts\start-router.ps1
+cd E:\projects\qwen-pipeline
 
 # 3. (optional) the file-aware `assign` agent, in an ISOLATED venv
 python -m venv .aider-venv
@@ -141,27 +142,30 @@ see [Enabling Gemini](#enabling-gemini-vertex-ai) below.
 
 | | Reference setup |
 |---|---|
-| Worker model | `qwen3-coder-next:latest` — 79.7B MoE (~3B active), **Q4_K_M**, 262k ctx, tools-capable |
+| Default worker | `qwen3.8-27b-q8-tuber` — fast local coding model, 32K configured context |
+| Optional worker | `qwen3-coder-next-q4-k-m` — 79.7B MoE, Q4_K_M, 32K configured context |
 | Embedder | `nomic-embed-text` (768-dim) — for retrieval |
-| Runner | Ollama (HTTP API on `127.0.0.1:11434`) |
+| Runner | Standalone llama.cpp supervisor (`127.0.0.1:8080/v1`) |
 
-**Expert-offload:** the ~48 GB model does not fit in 32 GB VRAM. Ollama keeps the
-attention/shared layers on the GPU and streams the MoE experts from system RAM. GPU utilisation
-looks low because it is memory-bandwidth-bound — normal for an MoE with few active params. Warm
-throughput ≈ 50–58 tok/s; cold load ≈ 55 s.
+The supervisor lives in `E:\projects\local-opencode`, advertises Qwen 3.8, Qwen Coder,
+and DeepSeek through one OpenAI-compatible endpoint, and unloads the previous coding model
+before a switch. Nomic embeddings use a separate small CPU llama.cpp process.
 
-**Warm model:** Ollama keeps the model resident for `keep_alive` after the last request (default
-**30m** here). Requests within that window skip the load (~0.1 s). It's deliberately not infinite
-— a warm model holds the whole GPU, so a moderate timeout frees it for other work when idle.
+Ollama is deprecated as an Apprentice provider. The legacy `ollama-local` code path remains
+for old user configs, but this repository's default and machine-local config no longer call
+the Ollama API. Qwen Coder's existing GGUF needs a patched standalone llama.cpp runtime; that
+runtime is CPU-only here (~5 tok/s), so Qwen 3.8 is the practical default.
 
-> **Model storage gotcha (Ollama desktop app):** the desktop app stores its model location in
-> `db.sqlite` and, when it spawns the server, sets `OLLAMA_MODELS` to that value — overriding your
-> env var. If a large `ollama pull` fills the wrong disk, point both the env var **and** the app's
-> DB at your intended path, then confirm with `ollama list`.
+The Qwen Coder and Nomic GGUFs in `local-opencode/models` are NTFS hard links to the
+existing blobs, so this migration does not duplicate the large model files.
 
 ---
 
 ## The standalone agent
+
+For the local Qwen3.8/DeepSeek llama.cpp router, OpenCode project setup, and a beginner
+explanation of model vs. inference engine vs. agent runtime, see
+[docs/OPENCODE.md](docs/OPENCODE.md).
 
 ```bash
 cd /path/to/your-repo

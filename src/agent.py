@@ -70,7 +70,7 @@ def _model_for(provider: str, cfg: dict[str, Any],
         tier = model if model in submodels else m.get("default_model", "flash")
         model_id = submodels.get(tier) or model or next(iter(submodels.values()))
         return model_id, env
-    return (model or m.get("model", "ollama_chat/qwen3-coder-next:latest")), env
+    return (model or m.get("model", "openai/qwen3-coder-next-q4-k-m")), env
 
 
 def make_worktree(repo: str, root: str) -> str:

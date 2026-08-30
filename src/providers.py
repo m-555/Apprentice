@@ -9,8 +9,7 @@ PROVIDERS holds the three built-in names (qwen, gemini, openai). Beyond those, p
 are CONFIG-DRIVEN: add any entry under config `providers.<name>` with a known `kind` and
 `resolve()` builds the handler — no code changes. Kinds:
 
-  - "ollama-local"       : a local Ollama model (host/model/keep_alive per provider,
-                           falling back to the top-level runner/worker_model config).
+  - "ollama-local"       : legacy compatibility for existing installations.
   - "openai-compatible"  : ANY OpenAI-style /chat/completions endpoint — OpenAI/Codex,
                            Groq, OpenRouter, Mistral, LM Studio, vLLM, llama.cpp server…
                            Configure base_url + model (+ api_key_env for the key; keys
@@ -220,7 +219,10 @@ def call_vertex(name: str, system: str, user: str, cfg: dict[str, Any],
 # --- built-in names (standard signature; tests may stub these directly) -----
 def call_qwen(system: str, user: str, cfg: dict[str, Any],
               usage: dict[str, Any] | None = None, model: str = "") -> str:
-    return call_ollama("qwen", system, user, cfg, usage, model)
+    kind = cfg.get("providers", {}).get("qwen", {}).get("kind", "openai-compatible")
+    if kind == "ollama-local":
+        return call_ollama("qwen", system, user, cfg, usage, model)
+    return call_openai_compatible("qwen", system, user, cfg, usage, model)
 
 
 def call_gemini(system: str, user: str, cfg: dict[str, Any],

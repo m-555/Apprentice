@@ -1,0 +1,48 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "local/qwen3.8-27b-q8-tuber",
+  "small_model": "local/qwen3.8-27b-q8-tuber",
+  "default_agent": "apprentice-maintainer",
+  "provider": {
+    "local": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Local llama.cpp router",
+      "options": {
+        "baseURL": "http://127.0.0.1:8080/v1",
+        "apiKey": "local-loopback-only",
+        "timeout": 1800000,
+        "chunkTimeout": 600000
+      },
+      "models": {
+        "qwen3.8-27b-q8-tuber": {
+          "name": "Qwen3.8 27B Q8 (local, recommended)",
+          "limit": {"context": 32768, "output": 8192}
+        },
+        "qwen3-coder-next-q4-k-m": {
+          "name": "Qwen3 Coder Next 79.7B Q4_K_M (local)",
+          "limit": {"context": 32768, "output": 8192}
+        },
+        "deepseek-v4-flash-0731-ud-iq2-m": {
+          "name": "DeepSeek V4 Flash IQ2_M (local, slow)",
+          "limit": {"context": 16384, "output": 8192}
+        }
+      }
+    }
+  },
+  "agent": {
+    "apprentice-maintainer": {
+      "description": "Maintains Apprentice while preserving its verification and learning architecture",
+      "mode": "primary",
+      "model": "local/qwen3.8-27b-q8-tuber",
+      "steps": 30,
+      "permission": {
+        "edit": "ask",
+        "bash": "ask",
+        "task": {
+          "*": "deny",
+          "apprentice-*": "allow"
+        }
+      }
+    }
+  }
+}

@@ -1,7 +1,7 @@
 """Phase 5 — in-context retrieval of past corrections (NO weight training).
 
 On each correction we embed the task with the local embedding model (nomic-embed-text via
-Ollama) and store the vector in corrections/index.jsonl. At delegation time we embed the
+the shared llama.cpp supervisor) and store the vector in corrections/index.jsonl. At delegation time we embed the
 incoming task, find the top-k most similar past corrections for the SAME provider+role
 (favoring real mistakes), and inject them as few-shot examples before calling the worker.
 
@@ -34,15 +34,19 @@ def _embedding_model(cfg: dict[str, Any]) -> str:
 
 
 def _embed(text: str, cfg: dict[str, Any]) -> list[float]:
-    host = cfg.get("runner", {}).get("host", "http://127.0.0.1:11434")
-    body = {"model": _embedding_model(cfg), "prompt": text}
+    embedding = cfg.get("embedding_model", {})
+    base_url = (embedding.get("base_url") or
+                cfg.get("providers", {}).get("qwen", {}).get("base_url") or
+                "http://127.0.0.1:8080/v1").rstrip("/")
+    body = {"model": _embedding_model(cfg), "input": text}
     req = urllib.request.Request(
-        f"{host}/api/embeddings",
+        f"{base_url}/embeddings",
         data=json.dumps(body).encode("utf-8"),
         headers={"Content-Type": "application/json"},
     )
     with urllib.request.urlopen(req, timeout=60) as resp:
-        return json.load(resp).get("embedding", [])
+        data = json.load(resp).get("data") or []
+        return data[0].get("embedding", []) if data else []
 
 
 def index_record(record: dict[str, Any], cfg: dict[str, Any]) -> bool:

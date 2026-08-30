@@ -518,7 +518,7 @@ _KIND_CHAT = {
 }
 
 # Built-in provider names map to their kind (config may omit `kind` for these).
-_BUILTIN_KIND = {"qwen": "ollama-local", "gemini": "vertex-ai",
+_BUILTIN_KIND = {"qwen": "openai-compatible", "gemini": "vertex-ai",
                  "openai": "openai-compatible"}
 
 

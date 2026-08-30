@@ -309,6 +309,19 @@ def test_provider_registry_config_driven():
     assert "groq" in names and "qwen" in names and "mystery" not in names
 
 
+def test_qwen_builtin_uses_configured_llama_cpp_kind():
+    old_openai, old_ollama = providers.call_openai_compatible, providers.call_ollama
+    calls = []
+    try:
+        providers.call_openai_compatible = lambda *args, **kwargs: calls.append("openai") or "ok"
+        providers.call_ollama = lambda *args, **kwargs: calls.append("ollama") or "legacy"
+        cfg = {"providers": {"qwen": {"kind": "openai-compatible"}}}
+        assert providers.call_qwen("system", "user", cfg) == "ok"
+        assert calls == ["openai"]
+    finally:
+        providers.call_openai_compatible, providers.call_ollama = old_openai, old_ollama
+
+
 def test_resolve_model_tiers():
     p = {"models": {"flash": "m-flash", "pro": "m-pro"}, "default_model": "flash"}
     assert providers._resolve_model(p, "pro") == "m-pro"        # tier alias

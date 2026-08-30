@@ -2,11 +2,11 @@
 
 Commands:
   apprentice init        set up the data home: create dirs, seed default config,
-                         check Ollama, and print the MCP registration command
+                         check the local llama.cpp runtime, and print the MCP command
   apprentice chat        interactive coding agent in the current repo (see below)
   apprentice run         headless agent: work a task until a done_when command passes
   apprentice serve       run the MCP stdio server (what your orchestrator spawns)
-  apprentice doctor      environment checks (config, Ollama, models, optional extras)
+  apprentice doctor      environment checks (config, local runtime, optional extras)
   apprentice report [N]  metering report over the last N events (default 50)
   apprentice reindex     rebuild the retrieval index from corrections.jsonl
   apprentice sessions    list recent agent sessions (resume with chat --resume <id>)
@@ -43,24 +43,21 @@ except ImportError:
     import paths
 
 
-def _ollama_status(cfg: dict) -> tuple[bool, str]:
-    host = cfg.get("runner", {}).get("host", "http://127.0.0.1:11434")
+def _local_runtime_status(cfg: dict) -> tuple[bool, str]:
+    base_url = (cfg.get("providers", {}).get("qwen", {}).get("base_url") or
+                cfg.get("runner", {}).get("host", "http://127.0.0.1:8080/v1")).rstrip("/")
     try:
-        with urllib.request.urlopen(f"{host}/api/tags", timeout=5) as resp:
-            tags = json.load(resp)
-        names = [m.get("name", "") for m in tags.get("models", [])]
-        worker = cfg.get("worker_model", {}).get("tag", "qwen3-coder-next:latest")
-        lines = [f"Ollama reachable at {host} ({len(names)} model(s) pulled)."]
-        if not any(n == worker or n.split(":")[0] == worker.split(":")[0] for n in names):
-            lines.append(f"  worker model '{worker}' NOT pulled yet -> ollama pull "
-                         f"{worker.split(':')[0]}")
-        if not any("embed" in n for n in names):
-            lines.append("  no embedding model found -> ollama pull nomic-embed-text "
-                         "(needed for retrieval; delegation works without it)")
-        return True, "\n".join(lines)
+        with urllib.request.urlopen(f"{base_url}/models", timeout=5) as resp:
+            catalog = json.load(resp)
+        names = [m.get("id", "") for m in catalog.get("data", [])]
+        worker = cfg.get("worker_model", {}).get("tag", "qwen3-coder-next-q4-k-m")
+        found = worker in names
+        return found, (f"llama.cpp supervisor reachable at {base_url} "
+                       f"({len(names)} coding model(s)); worker "
+                       f"'{worker}' {'available' if found else 'MISSING'}.")
     except Exception as exc:
-        return False, (f"Ollama NOT reachable at {host} ({exc}). Install/start it "
-                       f"(https://ollama.com), or configure a cloud provider instead.")
+        return False, (f"llama.cpp supervisor NOT reachable at {base_url} ({exc}). "
+                       "Start E:\\projects\\local-opencode\\scripts\\start-router.ps1.")
 
 
 def _seed_config(home: Path) -> list[str]:
@@ -99,7 +96,7 @@ def cmd_init(home: Path | None = None, check_ollama: bool = True) -> int:
         print(f"  {note}")
     cfg = paths.load_config()
     if check_ollama:
-        _ok, msg = _ollama_status(cfg)
+        _ok, msg = _local_runtime_status(cfg)
         print(msg)
     exe = "apprentice" if shutil.which("apprentice") else f"{sys.executable} -m apprentice.cli"
     print("\nRegister the MCP server with your orchestrator (Claude Code example):")
@@ -115,9 +112,9 @@ def cmd_doctor() -> int:
     ok = True
     print(f"data home : {paths.ROOT}")
     print(f"config    : {'OK' if paths.CONFIG_PATH.exists() else 'MISSING (run: apprentice init)'}")
-    o_ok, msg = _ollama_status(cfg)
-    ok = ok and o_ok
-    print(f"ollama    : {msg}")
+    runtime_ok, msg = _local_runtime_status(cfg)
+    ok = ok and runtime_ok
+    print(f"runtime   : {msg}")
     try:
         import google.genai  # type: ignore  # noqa: F401
         print("gemini    : google-genai installed")

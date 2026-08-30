@@ -1,40 +1,41 @@
 {
   "_comment": "Canonical config for the local Qwen worker pipeline. Referenced by the MCP server (Phase 2+). Recorded at execution time 2026-06-30.",
   "runner": {
-    "engine": "ollama",
-    "version": "0.30.11",
-    "host": "http://127.0.0.1:11434",
-    "models_dir": "E:\\projects\\qwen-pipeline\\models\\ollama",
-    "notes": "Models forced to E: via OLLAMA_MODELS (User env) AND the Ollama desktop app's db.sqlite settings.models column (the GUI overrides the env var when it spawns the server). C: is space-constrained."
+    "engine": "llama.cpp-supervisor",
+    "version": "local-opencode",
+    "host": "http://127.0.0.1:8080/v1",
+    "models_dir": "E:\\projects\\local-opencode\\models",
+    "notes": "The sibling local-opencode supervisor exposes loopback OpenAI-compatible coding and embedding endpoints."
   },
   "worker_model": {
-    "tag": "qwen3-coder-next:latest",
-    "id": "ca06e9e4087c",
-    "architecture": "qwen3next",
-    "parameters": "79.7B (MoE, ~3B active)",
-    "quantization": "Q4_K_M",
-    "disk_size_gb": 51,
-    "context_length_native": 262144,
+    "tag": "qwen3.8-27b-q8-tuber",
+    "id": "Qwen3.8-27B-UD-Q8_K_L.gguf",
+    "architecture": "qwen",
+    "parameters": "27B",
+    "quantization": "Q8_K_L",
+    "disk_size_gb": 28,
+    "context_length_native": 32768,
     "capabilities": [
       "completion",
       "tools"
     ],
     "license": "Apache-2.0",
-    "requires_ollama": ">=0.15.5"
+    "runtime": "llama.cpp"
   },
   "embedding_model": {
     "tag": "nomic-embed-text:latest",
+    "base_url": "http://127.0.0.1:8080/v1",
     "id": "0a109f422b47",
     "dimensions": 768,
     "disk_size_mb": 274
   },
   "offload": {
-    "mode": "auto-moe-expert-offload",
+    "mode": "model-specific",
     "engine_managed": true,
     "observed_vram_used_mib": 31900,
     "vram_total_mib": 32607,
-    "notes": "Ollama auto-places attention/shared layers on the GPU (VRAM sits just under the card's cap) and streams MoE experts from system RAM. GPU util is low (memory-bound, expected for MoE with few active params).",
-    "vram_tight_policy": "DO NOT downgrade the quant (user directive: stay on Q4_K_M). If VRAM approaches OOM, the lever is CONTEXT SIZE: cap num_ctx (KV cache grows with context). Ollama default context is modest; only raise num_ctx deliberately and watch nvidia-smi."
+    "notes": "Qwen 3.8 uses the CUDA llama.cpp runtime. DeepSeek maps experts to CPU; Qwen Coder currently uses its compatible CPU-only runtime.",
+    "vram_tight_policy": "The supervisor loads one coding model at a time. Reduce configured context before changing the chosen quantization."
   },
   "keep_alive": {
     "strategy": "per-request",
@@ -43,24 +44,34 @@
     "do_not_use_infinite": "A warm model holds the whole GPU, which blocks other GPU work. 30m keeps it instant during a coding session but auto-unloads when idle so the GPU returns to other apps. GPU is taken in turns, not shared."
   },
   "baseline_perf": {
-    "measured_on": "2026-06-30",
-    "cold_load_duration_s": 55.2,
-    "warm_load_duration_s": 0.13,
-    "eval_tokens_per_sec_warm": 57.7,
-    "note": "Cold load is a one-time cost per model load; keep_alive keeps it warm. Warm throughput ~50-58 tok/s on small generations."
+    "measured_on": "2026-08-29",
+    "qwen_coder_cpu_tokens_per_sec": 4.0,
+    "note": "Qwen Coder's compatible standalone runtime is CPU-only here. Qwen 3.8 is the faster default; model switches incur a cold load."
   },
   "providers": {
     "_comment": "Workers the orchestrator can delegate to via delegate(provider=...). Built-ins: qwen/gemini/openai. ADD YOUR OWN WITHOUT CODE: any entry here with a known `kind` becomes a valid provider name \u2014 kinds: ollama-local (local Ollama), openai-compatible (OpenAI, Groq, OpenRouter, Mistral, LM Studio, vLLM, llama.cpp server \u2014 set base_url/model/api_key_env), vertex-ai (Google Vertex). API keys NEVER go in config: name the env var in api_key_env. Optional per-provider `cost` (usd_per_mtok_in/out, flat or per model-tier) powers $ metering + usd budgets.",
     "default": "qwen",
     "qwen": {
       "enabled": true,
-      "kind": "ollama-local",
+      "kind": "openai-compatible",
+      "base_url": "http://127.0.0.1:8080/v1",
+      "model": "qwen3.8-27b-q8-tuber",
+      "timeout_s": 1800,
       "options": {
-        "_note": "Passed per-request to Ollama (keys starting with _ are stripped). LOW temperature is deliberate: implement-to-spec codegen wants determinism \u2014 fewer gate failures/retries. Do NOT add num_ctx here casually (KV cache grows with context; see offload.vram_tight_policy).",
+        "_note": "Passed to the OpenAI-compatible llama.cpp endpoint. LOW temperature is deliberate for deterministic code generation.",
         "temperature": 0.15,
         "top_p": 0.9
       },
-      "_note": "Uses runner.host + worker_model.tag + keep_alive.value above. Free, local, owns the GPU."
+      "_note": "Default local worker through the shared llama.cpp supervisor."
+    },
+    "qwen_coder": {
+      "enabled": true,
+      "kind": "openai-compatible",
+      "base_url": "http://127.0.0.1:8080/v1",
+      "model": "qwen3-coder-next-q4-k-m",
+      "timeout_s": 1800,
+      "options": {"temperature": 0.15, "top_p": 0.9},
+      "_note": "Opt-in 79.7B MoE coding model. The compatible standalone runtime is currently CPU-only."
     },
     "gemini": {
       "enabled": false,
@@ -202,9 +213,17 @@
     "done_timeout_s": 900,
     "models": {
       "qwen": {
-        "model": "ollama_chat/qwen3-coder-next:latest",
+        "model": "openai/qwen3.8-27b-q8-tuber",
         "env": {
-          "OLLAMA_API_BASE": "http://127.0.0.1:11434"
+          "OPENAI_API_BASE": "http://127.0.0.1:8080/v1",
+          "OPENAI_API_KEY": "local-loopback-only"
+        }
+      },
+      "qwen_coder": {
+        "model": "openai/qwen3-coder-next-q4-k-m",
+        "env": {
+          "OPENAI_API_BASE": "http://127.0.0.1:8080/v1",
+          "OPENAI_API_KEY": "local-loopback-only"
         }
       },
       "gemini": {
