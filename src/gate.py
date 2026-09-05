@@ -17,6 +17,7 @@ without code edits.
 from __future__ import annotations
 
 import re
+import os
 import subprocess
 import sys
 import tempfile
@@ -84,7 +85,8 @@ def resolve_language(role: str, fence_lang: str | None) -> str | None:
 def _run(cmd: list[str], cwd: str | None = None, timeout: int = 60):
     try:
         proc = subprocess.run(
-            cmd, capture_output=True, text=True, cwd=cwd, timeout=timeout
+            cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, cwd=cwd, timeout=timeout,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         )
         return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
     except FileNotFoundError as exc:

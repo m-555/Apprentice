@@ -6,6 +6,20 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Apprentice 0.3 / VS Code 0.2 — OpenCode task controller
+
+- Unified chat/run/MCP assign on OpenCode 1.18.25; Aider and the former chat loop are
+  explicit legacy fallbacks. Direct delegate remains the snippet pipeline.
+- Read-only Ask/Plan, Build with isolated dirty-tree snapshots, independently checked
+  delivery, conflict-aware byte-preserving Undo, retained failed patches and scoped lessons.
+- Versioned UI events, model/mode/role selection, filtered internal messages, task diffs,
+  cancellation, serialized session replacement and restored native conversation history.
+- Fixed Windows subprocesses inheriting chat stdin and native Resume's directory identity.
+- Added real VS Code extension-host tests using scripted models and opt-in live-model probes.
+
+The entries below describe the preceding legacy-loop release; see docs/AGENT.md for
+current behavior and the limits of verification.
+
 ### Fixed — the panel could not hold a conversation
 Four bugs that together made the VS Code panel unusable: it hung on the first message,
 Gemini died at the first tool call, a greeting triggered repo work, and resumed sessions

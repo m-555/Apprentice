@@ -10,6 +10,8 @@ Commands:
   apprentice report [N]  metering report over the last N events (default 50)
   apprentice reindex     rebuild the retrieval index from corrections.jsonl
   apprentice sessions    list recent agent sessions (resume with chat --resume <id>)
+  apprentice catalog     list configured OpenCode models and roles (no model loading)
+  apprentice lessons     list/show/disable/enable repository-scoped task memories
 
 Agent options (chat/run):
   --repo PATH        target repository (default: current directory)
@@ -18,7 +20,10 @@ Agent options (chat/run):
   --verify MODE      off | gate | tests   (default: config agent_chat.verify)
   --test-cmd CMD     the project's test command (else .qwen-pipeline.json / config)
   --yes              don't prompt before non-allowlisted shell commands
-  --allow-dirty      allow an uncommitted/non-git working tree
+  --allow-dirty      legacy backend only; OpenCode already snapshots dirty Git trees
+  --backend NAME     opencode (default) | legacy (compatibility only)
+  --mode MODE        ask (read-only default) | plan (read-only) | build
+  --role ROLE        general | explorer | implementer | reviewer
   --resume ID        continue a saved chat session
   --json             emit JSON-lines events instead of human output (for UIs / CI)
   --plan             (chat only) propose a plan and wait for approval before editing
@@ -103,7 +108,7 @@ def cmd_init(home: Path | None = None, check_ollama: bool = True) -> int:
     print(f"  claude mcp add --scope local qwen -- {exe} serve")
     print("\nOptional extras:")
     print("  pip install 'apprentice-pipeline[gemini]'   # Gemini/Vertex provider")
-    print("  (assign/Aider goes in its OWN venv — see README 'assign' section)")
+    print("  OpenCode CLI 1.18.25 is required for chat/run/assign. Aider is legacy-only.")
     return 0
 
 
@@ -121,8 +126,17 @@ def cmd_doctor() -> int:
     except ImportError:
         print("gemini    : google-genai not installed (optional — [gemini] extra)")
     aider = cfg.get("agent", {}).get("aider_exe", "aider")
-    print(f"aider     : {'found' if shutil.which(aider) else 'not found (optional — only for assign)'}"
+    print(f"aider     : {'found' if shutil.which(aider) else 'not found (legacy backend only)'}"
           f" ({aider})")
+    try:
+        from . import opencode_config
+    except ImportError:
+        import opencode_config
+    try:
+        print(f"opencode  : {opencode_config.executable(cfg)} (supported contract: 1.18.25)")
+    except ValueError as exc:
+        print(f"opencode  : {exc}")
+        ok = False
     enabled = [n for n, p in cfg.get("providers", {}).items()
                if isinstance(p, dict) and p.get("enabled")]
     print(f"providers : enabled = {', '.join(enabled) or '(none — run apprentice init and check config)'}")
@@ -167,6 +181,9 @@ def _agent_parser(prog: str, headless: bool) -> "argparse.ArgumentParser":
     p.add_argument("--repo", default=".")
     p.add_argument("--provider", default="")
     p.add_argument("--model", default="")
+    p.add_argument("--backend", choices=["opencode", "legacy"], default="")
+    p.add_argument("--mode", choices=["ask", "plan", "build"], default="")
+    p.add_argument("--role", choices=["general", "explorer", "implementer", "reviewer"], default="general")
     p.add_argument("--verify", default="", choices=["", "off", "gate", "tests"])
     p.add_argument("--test-cmd", dest="test_cmd", default="")
     p.add_argument("--yes", action="store_true")
@@ -191,6 +208,21 @@ def cmd_chat(argv: list[str]) -> int:
     args = _agent_parser("chat", headless=False).parse_args(argv)
     cfg = paths.load_config()
     provider = args.provider or cfg.get("providers", {}).get("default", "qwen")
+    if (args.backend or cfg.get("agent_chat", {}).get("backend", "opencode")) == "opencode":
+        try:
+            from . import opencode_ui
+        except ImportError:
+            import opencode_ui
+        try:
+            return opencode_ui.chat(args.repo, cfg, provider, args.model, args.verify,
+                args.test_cmd, args.yes, args.allow_dirty, args.resume, args.json_mode,
+                args.plan_mode, args.host_tools, args.mode, args.role)
+        except (ValueError, OSError) as exc:
+            if args.json_mode:
+                chat_ui.emit({"type": "error", "text": str(exc)})
+            else:
+                print(str(exc), file=sys.stderr)
+            return 1
     return chat_ui.chat(args.repo, cfg, provider, args.model, args.verify,
                         args.test_cmd, args.yes, args.allow_dirty, args.resume,
                         args.json_mode, args.plan_mode, args.host_tools)
@@ -204,6 +236,13 @@ def cmd_run(argv: list[str]) -> int:
     args = _agent_parser("run", headless=True).parse_args(argv)
     cfg = paths.load_config()
     provider = args.provider or cfg.get("providers", {}).get("default", "qwen")
+    if (args.backend or cfg.get("agent_chat", {}).get("backend", "opencode")) == "opencode":
+        try:
+            from . import opencode_ui
+        except ImportError:
+            import opencode_ui
+        return opencode_ui.run_headless(args.repo, cfg, args.task, args.done_when,
+            provider, args.model, args.verify, args.test_cmd, args.json_mode, args.host_tools, args.yes)
     return chat_ui.run_headless(args.repo, cfg, args.task, args.done_when, provider,
                                 args.model, args.verify, args.test_cmd, args.json_mode,
                                 args.host_tools)
@@ -241,6 +280,21 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_run(argv[1:])
     if cmd == "sessions":
         return cmd_sessions()
+    if cmd == "lessons":
+        try:
+            from . import lessons
+        except ImportError:
+            import lessons
+        return lessons.cli(argv[1:])
+    if cmd == "catalog":
+        try:
+            from . import opencode_config
+        except ImportError:
+            import opencode_config
+        import json
+        print(json.dumps({"models": opencode_config.catalog(paths.load_config()),
+                          "roles": ["general", "explorer", "implementer", "reviewer"]}))
+        return 0
     if cmd == "report":
         return cmd_report(int(argv[1]) if len(argv) > 1 else 50)
     if cmd == "reindex":

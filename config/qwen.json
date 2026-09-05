@@ -38,6 +38,7 @@
     "vram_tight_policy": "The supervisor loads one coding model at a time. Reduce configured context before changing the chosen quantization."
   },
   "keep_alive": {
+    "_legacy_only": "These values apply only to the legacy Ollama adapter. OpenCode/llama.cpp residency and idle unloading are controlled by the shared supervisor, not this block.",
     "strategy": "per-request",
     "value": "30m",
     "rationale": "First request loads the model (~48 GB, cold ~55 s); requests within keep_alive reuse the resident model (warm ~0.1 s). Measured: 0.13 s warm load.",
@@ -204,6 +205,8 @@
     }
   },
   "agent": {
+    "backend": "opencode",
+    "_legacy_only": "Fields below configure legacy Aider only. The default assign backend uses providers, opencode and workspace instead.",
     "_comment": "File-aware worker agents (Aider in a disposable git worktree). PROJECT-AGNOSTIC: the `assign` MCP tool takes repo=<abs path> + done_when=<shell cmd>, so it works on ANY git repo. Per-repo overrides via <repo>/.qwen-pipeline.json (its `agent` block merges over this). Set aider_exe to your isolated Aider venv's executable in config/qwen.local.json (e.g. .aider-venv/Scripts/aider.exe on Windows).",
     "aider_exe": "aider",
     "worktree_root": "",
@@ -249,7 +252,19 @@
     "build_timeout_s": 1800,
     "test_timeout_s": 900
   },
+  "opencode": {
+    "expected_version": "1.18.25",
+    "executable": "opencode",
+    "max_steps": 24,
+    "max_attempts": 3,
+    "task_timeout_s": 1800,
+    "approved_commands": [],
+    "_note": "Coding runtime for chat/run/assign. Model catalog comes from providers. Local inference settings remain owned by the shared llama.cpp router."
+  },
+  "workspace": {"max_bytes": 268435456, "setup_command": ""},
   "agent_chat": {
+    "backend": "opencode",
+    "_opencode_note": "OpenCode uses verify, test_cmd, test_timeout_s and use_corrections here. Other old loop/steering/compaction/escalation settings below apply to --backend legacy only. See docs/AGENT.md.",
     "_comment": "The standalone coding agent (`apprentice chat` / `apprentice run`) \u2014 a conversational loop with file/search/edit/run tools, driven by ANY single provider (local or cloud). `verify` is the differentiator: after each turn the agent's changes are checked and REVERTED if they fail, with the verbatim error fed back to the model. off = plain agent (edits land immediately); gate = each edited file must pass the mechanical compile/lint gate; tests = gate + the project's own test command (degrades to gate if no test command is configured).",
     "verify": "tests",
     "test_cmd": "",

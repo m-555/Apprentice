@@ -11,6 +11,7 @@ import { AgentSettings, runArgs, chatArgs } from "./config";
 import { ChatViewProvider, pickFolder } from "./chatView";
 import { locate, NotFoundError, Resolved } from "./locate";
 import { Usage } from "./protocol";
+import { registerTaskDiffs } from "./diffs";
 import { runInTerminal } from "./terminal";
 
 const LAST_SESSION_KEY = "apprentice.lastSessionId";
@@ -89,7 +90,8 @@ function updateStatus(usage: Usage | null, provider?: string, verify?: string): 
     : "Apprentice — click for actions";
 }
 
-export function activate(context: vscode.ExtensionContext): void {
+export function activate(context: vscode.ExtensionContext): { testController: ChatViewProvider } | undefined {
+  registerTaskDiffs(context);
   log = vscode.window.createOutputChannel("Apprentice");
   status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
   status.command = "apprentice.statusMenu";
@@ -232,17 +234,15 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // --- settings quick-picks -------------------------------------------------
   register("apprentice.setProvider", async () => {
-    const value = await vscode.window.showInputBox({
-      title: "Apprentice: model provider",
-      prompt: "Provider name (empty = use Apprentice's own config)",
-      value: vscode.workspace.getConfiguration("apprentice").get<string>("provider") || "",
-      placeHolder: "qwen | gemini | openai | a provider you configured",
-    });
-    if (value === undefined) return;
-    await vscode.workspace
-      .getConfiguration("apprentice")
-      .update("provider", value, vscode.ConfigurationTarget.Workspace);
-    updateStatus(null);
+    const resolved = await resolveOrReport();
+    if (!resolved) return;
+    try {
+      const catalog = JSON.parse(await capture(resolved, ["catalog"])) as { models: { name: string; provider: string; model: string }[] };
+      const pick = await vscode.window.showQuickPick(catalog.models.map(model => ({ label: model.name, ...model })), { title: "Apprentice: configured models" });
+      if (pick) await view.selectModel(pick.provider, pick.model);
+    } catch (error) {
+      await vscode.window.showErrorMessage(`Could not load model catalog: ${String(error)}`);
+    }
   });
 
   register("apprentice.setVerify", async () => {
@@ -260,6 +260,7 @@ export function activate(context: vscode.ExtensionContext): void {
     await vscode.workspace
       .getConfiguration("apprentice")
       .update("verify", value, vscode.ConfigurationTarget.Workspace);
+    if (value) view.sendCommand(`/verify ${value}`);
     updateStatus(null);
   });
 
@@ -297,6 +298,8 @@ export function activate(context: vscode.ExtensionContext): void {
       if (e.affectsConfiguration("apprentice")) updateStatus(null);
     })
   );
+  if (process.env.APPRENTICE_EXTENSION_TEST_MODE === "1") return { testController: view };
+  return undefined;
 }
 
 export function deactivate(): void {

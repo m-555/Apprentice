@@ -14,7 +14,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "apprentice-pipeline"
-version = "0.2.0"
+version = "0.3.0"
 description = "Local, multi-provider code-delegation pipeline: an MCP server that lets an orchestrator LLM delegate routine coding to cheap local/cloud worker models, mechanically verify the output, and learn from corrections."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -36,7 +36,7 @@ dependencies = [
 
 [project.optional-dependencies]
 gemini = ["google-genai==2.11.0"]
-# NOTE: Aider (the `assign` agent) is deliberately NOT an extra — it must live in its
+# NOTE: Legacy Aider is deliberately NOT an extra — it must live in its
 # own venv so its large dependency tree can't collide with the pinned server deps.
 # See requirements-aider.txt.
 

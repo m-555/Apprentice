@@ -8,3 +8,4 @@ dist/test-bundle.js
 **/*.ts
 .gitignore
 *.vsix
+README_LEGACY.md

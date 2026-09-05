@@ -1,5 +1,9 @@
 # Apprentice
 
+Apprentice **0.3** now uses **OpenCode** for terminal chat, the VS Code panel, and
+MCP `assign`; Aider is legacy-only. Start with the [current agent guide](docs/AGENT.md)
+for the before/after explanation, setup, permissions and verification limits.
+
 **A local, multi-provider code-delegation pipeline.** A master orchestrator (e.g. Claude Code)
 delegates routine coding to *apprentice* models — a **local model on your own machine** (via llama.cpp),
 **Gemini** (Vertex AI), **GPT/Codex** (OpenAI), or **any OpenAI-compatible endpoint** (Groq,
@@ -16,7 +20,7 @@ and enforces daily budgets.
 
 1. **Standalone agent** — `apprentice chat` gives you a coding agent in your terminal, driven by
    one model of your choice. No orchestrator subscription needed. Every change it makes is
-   verified and **auto-reverted if it breaks your tests**. → **[docs/AGENT.md](docs/AGENT.md)**
+   made in an isolated worktree and checked before delivery. → **[docs/AGENT.md](docs/AGENT.md)**
 2. **VS Code extension** — the same agent in a sidebar panel: streaming replies, tool activity,
    verification badges, one-click diffs, and inline approval for shell commands.
    → **[vscode-extension/](vscode-extension/)**
@@ -24,8 +28,9 @@ and enforces daily budgets.
    an orchestrator (Claude Code, …) can offload routine coding to cheaper models and stay the
    judge.
 
-Both share the same engine: providers, mechanical gate, tests, budgets, and the corrections
-store that makes the workers better over time.
+Chat, the extension and `assign` share one OpenCode task controller. Direct `delegate`
+remains a separate lightweight snippet pipeline. All retain Apprentice's configured
+providers, checks, budget accounting and correction records.
 
 New here? **[docs/TRY_IT.md](docs/TRY_IT.md)** walks you through the whole thing on a toy project with the free local model. For the mental model, see **[docs/MULTI_AGENT.md](docs/MULTI_AGENT.md)** — it explains, in beginner
 terms, what an "agent" is and how the boss + two-worker model fits together.
@@ -78,7 +83,7 @@ The "specialized agents" (test writer, C++ implementer, …) are **not** separat
 
 - **Python 3.11+**
 - The sibling **Local OpenCode Platform** and its llama.cpp supervisor running locally.
-- *(optional, for the `assign` file-aware agent)* **[Aider](https://aider.chat)** in its own venv.
+- **OpenCode 1.18.25** for chat/run/assign. Aider is optional for explicit legacy use only.
 - *(optional, for the Gemini worker)* `google-genai` + Google Cloud **Vertex AI** credentials.
 - An **MCP-capable orchestrator** (e.g. Claude Code) to drive the tools.
 
@@ -123,9 +128,8 @@ cd E:\projects\local-opencode
 .\scripts\start-router.ps1
 cd E:\projects\qwen-pipeline
 
-# 3. (optional) the file-aware `assign` agent, in an ISOLATED venv
-python -m venv .aider-venv
-.aider-venv/Scripts/pip install -r requirements-aider.txt
+# 3. the shared coding runtime for chat/run/assign
+npm install -g opencode-ai@1.18.25
 
 # 4. register the MCP server with your orchestrator (Claude Code example)
 claude mcp add --scope local qwen -- ".venv/Scripts/python.exe" "src/server.py"
@@ -169,14 +173,15 @@ explanation of model vs. inference engine vs. agent runtime, see
 
 ```bash
 cd /path/to/your-repo
-apprentice chat                                    # local free model, verification on
+apprentice chat                                    # local model, read-only Ask mode
+apprentice chat --mode build --test-cmd "npm test"  # verified coding
 apprentice chat --provider gemini --model pro      # a stronger cloud model
 apprentice run "add mul(a,b)" --done-when "pytest -q"   # unattended
 ```
 
-It reads, searches, edits, and runs commands in your repo — and after every turn its changes
-are checked. If they fail your project's tests, they are **reverted byte-for-byte** and the
-verbatim failure goes back to the model to fix:
+Ask and Plan inspect without edits or shell commands. Build works on a snapshot of your
+current saved files. Candidate edits are checked before delivery; failed checks return
+to the worker within a bounded retry limit. Your checkout is not the retry scratchpad:
 
 ```
   -> read_file(calc.py)
@@ -185,9 +190,9 @@ verbatim failure goes back to the model to fix:
   [OK] verified (tests)
 ```
 
-`--verify off | gate | tests` picks how strict that is; `/undo`, `/provider`, `/cost` and
-friends work mid-session; a model that keeps failing escalates to a stronger tier
-automatically. Shell commands are allowlist/denylist-checked and prompt before running.
+`--verify off | gate | tests` selects verification. `/undo`, `/provider`, `/cost` and
+other commands work between tasks. There is no automatic cloud escalation. Build shell
+commands require approval; caller-supplied acceptance commands run automatically.
 Replies stream in token-by-token (local + OpenAI-compatible providers), and **`--json`**
 switches the output to JSON-lines events — the integration surface for the VS Code
 extension, a web UI, or CI. Full guide: **[docs/AGENT.md](docs/AGENT.md)**.
@@ -196,7 +201,7 @@ extension, a web UI, or CI. Full guide: **[docs/AGENT.md](docs/AGENT.md)**.
 
 ```bash
 cd vscode-extension && npm install && npm run package
-code --install-extension apprentice-vscode-0.1.0.vsix
+code --install-extension apprentice-vscode-0.2.0.vsix
 ```
 
 Then `Ctrl/Cmd+Shift+A` opens the agent panel in any repo. It drives the same CLI, so
@@ -246,20 +251,21 @@ delegate(task="Add mul(a,b)…", role="py_implementer",
 ```
 
 ### `assign(task, done_when, repo, provider="", files="", max_iters=0, apply=True, model="")  ->  dict`
-A **file-aware worker agent** (Aider) that reads `repo` itself and grinds a whole task to an
+A **file-aware OpenCode worker** that reads `repo` itself and works a whole task toward an
 **objective "done"** with no orchestrator in the loop. The boss's role = **define task + define
 done + commit**.
 
 > **When to use which:** for a *known target file*, prefer `delegate` in token-cheap mode
-> (`context_files` + `apply_to` + `test_cmd`) — it's simpler, faster, and needs no Aider install.
+> (`context_files` + `apply_to` + `test_cmd`) — it needs no coding-agent runtime.
 > Reach for `assign` when the task is genuinely **exploratory or multi-file** ("find where X is
 > handled and fix it") — that's what the repo-map agent is for.
 
-- Runs Aider (isolated venv, pinned) in a **disposable git worktree** off `repo`'s HEAD — the real
-  tree is untouched. Loops: worker edits → run `done_when` (a shell cmd that must exit 0) → on
+- Runs OpenCode in a **disposable git worktree** containing the current saved files,
+  including relevant dirty changes. Loops: worker edits → run `done_when` → on
   failure feed the verbatim output back to the worker (up to `max_iters`).
-- On green: extracts a **clean diff** (build/worker junk filtered) and, if `apply`, **mechanically
-  applies it** to the real tree. You then just commit.
+- On green: extracts a patch and, if `apply`, delivers it only if affected original files
+  still match the task baseline. Review the diff before committing. Maintain `.gitignore`
+  so generated build output is excluded. Failed candidates remain available as patches.
 - Returns a cheap summary: `{done_passed, applied, iterations, files_changed, patch_path,
   done_log_tail, worker_log_tail, output_id}` — the full diff is in `patch_path`.
 
@@ -345,9 +351,12 @@ Secrets and machine-local values go in `config/qwen.local.json` (gitignored), wh
 3. Delegate to a tier: `delegate(..., provider="gemini", model="pro")` or
    `assign(..., provider="gemini", model="flash")`.
 
-> ⚠️ The `assign` (Aider) model ids **must** use litellm's **`vertex_ai/`** prefix for a service
+> Legacy-only: the `assign` Aider backend model ids **must** use litellm's **`vertex_ai/`** prefix for a service
 > account (e.g. `vertex_ai/gemini-2.5-pro`), NOT `gemini/` (the AI-Studio API-key path). Full
 > walkthrough + the two-model-id-forms gotcha: **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)**.
+
+OpenCode uses the bare configured Vertex model IDs and `providers.gemini.credentials_file`.
+Paid MCP assignments require explicit `opencode.approved_paid_providers` configuration.
 
 ---
 
@@ -424,7 +433,7 @@ Gitignored (never pushed): `config/qwen.local.json`, `secrets/`, `corrections/*.
 
 | Symptom | Fix |
 |---|---|
-| `delegate` errors "Could not reach Ollama" | Server down. Run `ollama serve` (or start the desktop app). Check `ollama list`. |
+| Local model endpoint unreachable | Start the shared llama.cpp supervisor; check `apprentice doctor`. Ollama is legacy-only. |
 | MCP server not connected | Run the launch command directly to see the error: `.venv/Scripts/python.exe src/server.py` |
 | New tools not visible in a running session | They load in new sessions automatically; in a running one, reconnect (e.g. `/mcp`). |
 | A pull fills the wrong disk | Ollama isn't using your intended path — see the model-storage gotcha above. |

@@ -58,6 +58,8 @@ def index_record(record: dict[str, Any], cfg: dict[str, Any]) -> bool:
     if not vec:
         return False
     entry = {
+        "repo": record.get("repo", ""),
+        "source": record.get("source", record.get("corrected_by", "user")),
         "timestamp": record.get("timestamp", ""),
         "provider": record.get("provider", "qwen"),
         "role": record.get("role", ""),
@@ -90,7 +92,7 @@ def _cosine(query: np.ndarray, mat: np.ndarray) -> np.ndarray:
     return mn @ qn
 
 
-def retrieve(task: str, provider: str, role: str, cfg: dict[str, Any]) -> list[dict[str, Any]]:
+def retrieve(task: str, provider: str, role: str, cfg: dict[str, Any], repo: str = "") -> list[dict[str, Any]]:
     """Return up to top_k SIMILAR past corrections for (provider, role).
 
     "Similar" is enforced, not assumed. Ranking alone always returns the k least-bad
@@ -113,6 +115,7 @@ def retrieve(task: str, provider: str, role: str, cfg: dict[str, Any]) -> list[d
     cand = [
         e for e in entries
         if e.get("provider") == provider and (not role_filter or e.get("role") == role)
+        and (not repo or (e.get("repo") and Path(e["repo"]).resolve() == Path(repo).resolve()))
     ]
     if not cand:
         return []

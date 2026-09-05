@@ -1,73 +1,59 @@
 # Apprentice for VS Code
 
-A coding agent in your sidebar, driven by **your own model** — a free local one via Ollama,
-or a cloud model (Gemini, GPT/Codex, Groq, …). No subscription to any particular vendor.
+Chat with your local or cloud models through OpenCode. Apprentice checks candidate
+edits before delivering them to your project; failed work stays isolated. Tests catch
+some mistakes, but are not proof of correctness.
 
-What makes it different: **nothing broken survives a turn.** After each turn the agent's
-changes are checked against your project's own tests, and anything that fails is
-**automatically reverted** with the error handed back to the model to fix. That's what
-makes a cheap, weaker model safe to point at real code.
+Requires Apprentice **0.3.0**, OpenCode **1.18.25**, Git, and a configured model endpoint.
+Local inference uses llama.cpp, not Ollama. No models ship in this VSIX.
 
-> This extension is a **frontend only**. All the intelligence — tools, verification,
-> budgets, escalation — lives in the [Apprentice](https://github.com/m-555/Apprentice)
-> agent, which it launches and talks to over a JSON event protocol.
+Open **Apprentice: Open Agent Panel** (`Ctrl+Shift+A`), choose your model and:
 
-## Requirements
+- **Ask:** explain or inspect code, read-only (default).
+- **Plan:** investigate and propose a plan, read-only.
+- **Build:** change an isolated copy, then run the configured checks before delivery.
 
-Apprentice itself must be installed:
+Roles focus one worker: General, Explorer, Implementer, Reviewer. Explorer and Reviewer
+stay read-only; these are not an automatic parallel team.
 
-```bash
-pipx install git+https://github.com/m-555/Apprentice.git
-apprentice init
-```
+The panel has streaming answers, collapsed tools, VS Code theme/fonts, multiline
+drafts, code-copy buttons, approvals, Stop, New Session, Resume and task-specific diffs.
+Raw reasoning and internal checkpoints stay out of chat. Mid-task messages queue;
+Stop cancels the active task and clears the queue.
 
-The extension finds it automatically in this order:
+## Setup
 
-1. the `apprentice.executable` setting,
-2. `apprentice` on your `PATH`,
-3. `apprentice.pythonPath` + `apprentice.repoPath` (for a source checkout).
-
-Run **Apprentice: Check Setup (doctor)** any time to see what it found and whether your
-model backend is reachable.
-
-## Using it
-
-- **Apprentice: Open Agent Panel** — the sidebar chat. Type what you want changed.
-- **Apprentice: Run Task Until Tests Pass** — unattended: give a task and an acceptance
-  command, and the agent grinds until it passes.
-- **Apprentice: Start Chat in Terminal** — the plain CLI REPL, if you prefer it.
-
-In the panel you'll see each tool call as it happens (click a row to expand its output),
-a green **verified** badge when a turn passes, and a red **reverted** badge with the real
-test output when it doesn't. Changed files appear as chips — click one to open a diff
-against `HEAD`.
-
-When the agent wants to run a shell command that isn't on the allowlist, you get an
-**Allow / Deny** prompt right in the panel. Nothing runs behind your back.
-
-## Settings
+Backend discovery checks `apprentice.executable`, then `apprentice` on PATH, then
+`apprentice.pythonPath` + `apprentice.repoPath`. Use **Check Setup (doctor)** to see
+what it found. The Python backend and OpenCode must be installed separately.
 
 | Setting | Purpose |
-|---|---|
-| `apprentice.executable` / `pythonPath` / `repoPath` | Where Apprentice lives (usually auto-detected) |
-| `apprentice.provider` / `model` | Which model to use (e.g. `qwen`, or `gemini` + `pro`) |
-| `apprentice.verify` | `off` (no checking) · `gate` (must compile/lint) · `tests` (must pass your tests) |
-| `apprentice.testCommand` | How to run this project's tests, e.g. `npx vitest run` |
-| `apprentice.autoApproveCommands` | Run shell commands without asking |
-| `apprentice.allowDirty` | Allow starting on a non-git or uncommitted tree |
+| --- | --- |
+| `apprentice.pythonPath` / `repoPath` | Interpreter and Apprentice source checkout |
+| `apprentice.provider` / `model` | Initial model selection |
+| `apprentice.verify` | Project tests, configured language gate, or explicit unverified delivery |
+| `apprentice.testCommand` | Acceptance command, such as `npm test` |
+| `apprentice.autoApproveCommands` | Explicit shell auto-approval; off by default |
+| `apprentice.allowDirty` | Legacy-only; OpenCode snapshots saved dirty Git files automatically |
 
-Every setting is optional — leave it empty and Apprentice's own configuration decides. The
-extension never overrides what you didn't set.
+Save editor buffers before tasks. Dependency folders are not copied: configure
+approved workspace setup where necessary. Worktrees isolate edits, not OS access.
 
-## Notes
+Full setup, migration, safety limits and testing:
+[Agent guide](https://github.com/m-555/Apprentice/blob/main/docs/AGENT.md).
 
-- **Git is your undo.** The agent refuses to start on a dirty tree by default, so
-  `git diff` always shows exactly what it did.
-- Replies stream in token-by-token for local (Ollama) and OpenAI-compatible providers.
-  Vertex/Gemini replies arrive complete instead.
-- A local 7B–80B model is genuinely weaker than a frontier model on long, multi-step work.
-  Verification means its mistakes get caught — not that it stops making them.
+## Development
 
-## License
+```text
+npm ci
+npm run build
+npm run typecheck
+npm test
+npm run test:host
+npm run package
+```
 
-MIT.
+`test:host` requires `APPRENTICE_TEST_VSCODE` pointing to the installed Code executable.
+It uses a separate profile and fake model server; no GPU inference.
+
+License: MIT.

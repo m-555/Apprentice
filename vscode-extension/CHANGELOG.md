@@ -3,6 +3,16 @@
 All notable changes to the extension. The [Apprentice agent](https://github.com/m-555/Apprentice)
 itself is versioned separately; see its `CHANGELOG.md`.
 
+## [0.2.0] — 2026-09-05
+
+- Requires Apprentice 0.3 with the OpenCode task controller.
+- Model/mode/role selectors, read-only Ask/Plan, and verified Build delivery.
+- Native message identities prevent duplicate bubbles; internal reasoning/checkpoints
+  are filtered by the backend. Code blocks support Copy and VS Code theme fonts.
+- Stop cancels upstream work; New/Resume wait for cleanup. Restored transcripts retain
+  selections, active approval state and task-specific before/after diffs.
+- Added real extension-host and renderer tests. Long model waits show elapsed status.
+
 ## [0.1.3] — 2026-08-09
 
 ### Fixed

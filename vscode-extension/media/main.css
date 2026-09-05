@@ -1,7 +1,7 @@
 /* Everything is a VS Code CSS variable, so light/dark and custom themes work for free. */
 
 :root {
-  --gap: 8px;
+  --gap: 12px;
 }
 
 body {
@@ -50,11 +50,22 @@ body {
 }
 
 .msg {
-  padding: 6px 8px;
-  border-radius: 4px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  line-height: 1.65;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+#selectors { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px; }
+#selectors label { display: flex; flex-direction: column; gap: 4px; min-width: 80px; flex: 1; font-size: 12px; }
+#selectors label:first-child { flex-basis: 100%; }
+select { width: 100%; border: 1px solid var(--vscode-dropdown-border, var(--vscode-widget-border)); padding: 7px; border-radius: 6px; color: var(--vscode-dropdown-foreground); background: var(--vscode-dropdown-background); font: inherit; }
+button:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: 2px; }
+button:disabled, select:disabled { opacity: .6; cursor: default; }
+.tool-card { border: 1px solid var(--vscode-widget-border); border-radius: 8px; padding: 8px; }
+.tool-card summary { cursor: pointer; color: var(--vscode-descriptionForeground); }
+.tool-card pre { margin: 8px 0 0; font-size: var(--vscode-editor-font-size); }
 
 .msg.user {
   background: var(--vscode-input-background);
@@ -228,3 +239,6 @@ button.secondary:hover { background: var(--vscode-button-secondaryHoverBackgroun
 @media (prefers-reduced-motion: reduce) { .dot { animation: none; opacity: 0.6; } }
 
 .hidden { display: none; }
+.code-block { position: relative; margin: 10px 0; padding: 32px 12px 12px; background: var(--vscode-textCodeBlock-background); border-radius: 8px; overflow: auto; }
+.code-block pre { margin: 0; white-space: pre; font-family: var(--vscode-editor-font-family); font-size: var(--vscode-editor-font-size); }
+.copy-code { position: absolute; right: 6px; top: 4px; font-size: 11px; padding: 3px 8px; }

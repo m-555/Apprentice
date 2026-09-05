@@ -507,6 +507,7 @@ def log_correction(
     corrected_output: str = "",
     provider: str = "qwen",
     context: str = "",
+    repo: str = "",
 ) -> dict[str, Any]:
     """Log a correction (powers §5 retrieval). Call after every delegation — even when
     the worker was correct (error_category="none", empty correction_patch).
@@ -569,6 +570,7 @@ def log_correction(
         "explanation": explanation + patch_note,
         "machine_verified": False,
         "corrected_by": "claude",
+        "repo": str(Path(repo).resolve()) if repo else "",
     }
     # Fail-safe embed+index inside the shared writer — never lose the correction if the
     # embedder is unreachable (rebuild later via `python retrieval.py reindex`).
@@ -599,7 +601,7 @@ def log_correction(
 def assign(task: str, done_when: str, repo: str, provider: str = "",
            files: str = "", max_iters: int = 0, apply: bool = True,
            model: str = "") -> dict[str, Any]:
-    """Phase 7 — delegate a whole task to a FILE-AWARE worker agent (Aider) that reads the
+    """Delegate a whole task to a FILE-AWARE OpenCode worker that reads the
     repo itself, then grind it to an OBJECTIVE 'done' with NO Claude in the loop.
 
     Your job as orchestrator: DEFINE THE TASK, DEFINE DONE, delegate here, then review the
@@ -640,11 +642,32 @@ def assign(task: str, done_when: str, repo: str, provider: str = "",
     agent_cfg = _CFG.get("agent", {})
     if eff_provider == "gemini":
         agent_cfg = _deep_merge(agent_cfg, {"models": {"gemini": {"env": _gemini_agent_env()}}})
-    result = agent.run_agent_task(
-        task=task, done_when=done_when, repo=repo, provider=eff_provider,
-        files=file_list, max_iters=max_iters, agent_cfg=agent_cfg,
-        outputs_dir=paths.OUTPUTS_DIR, apply=apply, model=model,
-    )
+    if agent_cfg.get("backend", "opencode") == "aider":
+        result = agent.run_agent_task(
+            task=task, done_when=done_when, repo=repo, provider=eff_provider,
+            files=file_list, max_iters=max_iters, agent_cfg=agent_cfg,
+            outputs_dir=paths.OUTPUTS_DIR, apply=apply, model=model)
+    else:
+        try:
+            from .opencode_tasks import Task
+            from .opencode_ui import new_session, save
+        except ImportError:
+            from opencode_tasks import Task
+            from opencode_ui import new_session, save
+        session = new_session(repo, _CFG, eff_provider, model, "tests", done_when)
+        # Headless MCP cannot display interactive approvals. Permit only caller-
+        # configured shell commands; edits are confined to the task worktree.
+        allowed = _CFG.get("opencode", {}).get("approved_commands", [])
+        def approve(request):
+            if request.get("tool") == "paid model":
+                return eff_provider in _CFG.get("opencode", {}).get("approved_paid_providers", [])
+            return request.get("tool") in ("bash", "workspace setup") and request.get("command") in [done_when, *allowed]
+        runner = Task(_CFG, lambda _event: None, approve)
+        try:
+            result = runner.run(session, task + ("\nFile hints: " + ", ".join(file_list) if file_list else ""),
+                                mode="build", apply=apply, max_iters=max_iters)
+        finally:
+            save(session)
     metering.record({
         "tier": eff_provider,
         "model": model,

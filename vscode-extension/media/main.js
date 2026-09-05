@@ -10,10 +10,22 @@
   const hdrProvider = document.getElementById("hdr-provider");
   const hdrVerify = document.getElementById("hdr-verify");
   const hdrSession = document.getElementById("hdr-session");
+  const modelSelect = document.getElementById("model-select");
+  const modeSelect = document.getElementById("mode-select");
+  const roleSelect = document.getElementById("role-select");
+  const parts = new Map();
+  let active = false;
+  let selection = {};
+  const draft = vscode.getState();
+  input.value = draft?.draft || "";
 
   let working = null;
 
   function renderHeader(m) {
+    selection = { ...selection, ...Object.fromEntries(Object.entries(m).filter(([, value]) => value !== undefined)) };
+    modelSelect.value = JSON.stringify([selection.provider, selection.model]);
+    if (selection.mode) modeSelect.value = selection.mode;
+    if (selection.role) roleSelect.value = selection.role;
     if (m.provider !== undefined) {
       hdrProvider.textContent = m.model ? `${m.provider} / ${m.model}` : m.provider;
     }
@@ -22,8 +34,8 @@
       // Make the risky mode visually obvious: with verification off nothing is checked.
       hdrVerify.className = "pill " + (m.verify === "off" ? "loose" : "strict");
       hdrVerify.title =
-        m.verify === "tests" ? "Changes must pass this project's tests, or they're reverted"
-        : m.verify === "gate" ? "Changes must compile/lint, or they're reverted"
+        m.verify === "tests" ? "Candidate changes must pass the configured project check before delivery"
+        : m.verify === "gate" ? "Supported edited files must pass the configured compile/lint gate before delivery"
         : "Verification is OFF — edits land unchecked";
     }
     if (m.session !== undefined) {
@@ -38,6 +50,29 @@
     return node;
   }
 
+  function renderText(node, text) {
+    // Conservative formatting: code blocks and inline code; raw HTML stays text.
+    node.textContent = "";
+    const chunks = String(text || "").split(/(```[^\n]*\n[\s\S]*?(?:```|$))/g);
+    for (const chunk of chunks) {
+      if (chunk.startsWith("```")) {
+        const newline = chunk.indexOf("\n");
+        const code = chunk.slice(newline + 1).replace(/```$/, "");
+        const block = el("div", "code-block");
+        const copy = el("button", "secondary copy-code", "Copy code");
+        copy.onclick = () => vscode.postMessage({ type: "copy", text: code });
+        block.appendChild(copy);
+        block.appendChild(el("pre", null, code));
+        node.appendChild(block);
+      } else {
+        for (const segment of chunk.split(/(`[^`\n]+`)/g)) {
+          node.appendChild(segment.startsWith("`") && segment.endsWith("`")
+            ? el("code", null, segment.slice(1, -1)) : document.createTextNode(segment));
+        }
+      }
+    }
+  }
+
   function atBottom() {
     return log.scrollHeight - log.scrollTop - log.clientHeight < 40;
   }
@@ -50,6 +85,8 @@
   }
 
   function setWorking(on) {
+    active = on;
+    modelSelect.disabled = modeSelect.disabled = roleSelect.disabled = on;
     if (on && !working) {
       working = el("div", "working");
       working.appendChild(el("span", "dot"));
@@ -59,8 +96,8 @@
       working.remove();
       working = null;
     }
-    // NOT disabled while working: sending mid-turn steers the running task.
-    sendBtn.textContent = on ? "Steer" : "Send";
+    // Sending mid-turn queues another request. Stop clears that queue.
+    sendBtn.textContent = on ? "Queue message" : "Send";
   }
 
   function addTool(ev) {
@@ -105,7 +142,7 @@
     const allow = el("button", null, o.allowLabel || "Allow");
     const deny = el("button", "secondary", o.denyLabel || "Deny");
     const answer = (ok) => {
-      vscode.postMessage({ type: "confirm", allow: ok });
+      vscode.postMessage({ type: "confirm", request_id: ev.request_id, allow: ok });
       row.remove();
       box.appendChild(el("div", "resolved",
                           ok ? (o.yes || "Allowed.") : (o.no || "Denied.")));
@@ -116,6 +153,7 @@
     row.appendChild(deny);
     box.appendChild(row);
     add(box);
+    if (ev.request_id) box.dataset.requestId = ev.request_id;
   }
 
   function renderChanged(files) {
@@ -128,7 +166,7 @@
     changedTray.appendChild(el("span", "label", "Changed:"));
     for (const f of files) {
       const chip = el("span", "chip", f);
-      chip.title = "Open diff against HEAD";
+      chip.title = "Open this task's before/after diff";
       chip.onclick = () => vscode.postMessage({ type: "openDiff", path: f });
       changedTray.appendChild(chip);
     }
@@ -159,6 +197,77 @@
 
   function renderEvent(ev) {
     switch (ev.type) {
+      case "session_start":
+        renderHeader({ provider: ev.provider, model: ev.model, verify: ev.verify, session: ev.session_id });
+        if (["ask", "plan", "build"].includes(ev.mode)) modeSelect.value = ev.mode;
+        if (ev.role) roleSelect.value = ev.role;
+        break;
+      case "catalog":
+        modelSelect.textContent = "";
+        for (const model of ev.models) {
+          const option = el("option", null, model.name);
+          option.value = JSON.stringify([model.provider, model.model]);
+          modelSelect.appendChild(option);
+        }
+        renderHeader({});
+        break;
+      case "message_part": {
+        let node = parts.get(ev.id);
+        if (!node) {
+          node = add(el("div", "msg assistant", ""));
+          node.dataset.messageId = ev.message_id;
+          parts.set(ev.id, node);
+        }
+        const stick = atBottom();
+        renderText(node, ev.text);
+        if (stick) log.scrollTop = log.scrollHeight;
+        break;
+      }
+      case "tool_part": {
+        let node = parts.get(ev.id);
+        if (!node) {
+          node = el("details", "tool-card");
+          node.appendChild(el("summary"));
+          node.appendChild(el("pre", "tool-output"));
+          node.dataset.messageId = ev.message_id;
+          parts.set(ev.id, node);
+          add(node);
+        }
+        node.firstChild.textContent = `${ev.tool} · ${ev.status}`;
+        node.lastChild.textContent = ev.text || JSON.stringify(ev.args || {}, null, 2);
+        break;
+      }
+      case "message_remove":
+        for (const [id, node] of parts) if (node.dataset.messageId === ev.message_id) { node.remove(); parts.delete(id); }
+        break;
+      case "part_remove":
+        parts.get(ev.id)?.remove(); parts.delete(ev.id);
+        break;
+      case "history_v2": {
+        const wasActive = active;
+        log.textContent = ""; parts.clear(); working = null; streamBubble = null;
+        for (const item of ev.events || []) renderEvent(item);
+        setWorking(wasActive);
+        break;
+      }
+      case "task_status":
+        setWorking(true);
+        if (working) {
+          const label = { preparing: "Preparing isolated workspace", "baseline-check": "Checking the starting code", working: "Working", verifying: "Running your checks", "awaiting-model": "Waiting for the model", stopping: "Stopping and cleaning up" }[ev.status] || ev.status;
+          working.lastChild.textContent = `${label}${ev.elapsed_s ? ` · ${ev.elapsed_s}s elapsed` : ""}${ev.attempt ? ` · attempt ${ev.attempt}` : ""}…`;
+        }
+        break;
+      case "approval_resolved":
+        for (const box of log.querySelectorAll(".confirm")) if (box.dataset.requestId === ev.request_id) {
+          for (const button of box.querySelectorAll("button")) button.disabled = true;
+        }
+        break;
+      case "notice":
+        add(el("div", "notice", ev.text));
+        break;
+      case "turn_end":
+        setWorking(false);
+        break;
       case "user":
         add(el("div", "msg user", ev.text));
         break;
@@ -166,7 +275,6 @@
         renderHistory(ev.messages);
         break;
       case "text_delta": {
-        setWorking(false);
         if (!streamBubble) streamBubble = add(el("div", "msg assistant", ""));
         const stick = atBottom();
         streamBubble.textContent += ev.text;
@@ -189,11 +297,11 @@
         addToolResult(ev);
         break;
       case "verify_passed":
-        add(el("div", "badge ok", "✓ verified (" + (ev.check || "") + ")"));
+        add(el("div", ["not checked", "no applicable checks", "none"].includes(ev.check) ? "badge info" : "badge ok", "Checks: " + (ev.check || "not reported")));
         break;
       case "verify_failed": {
         add(el("div", "badge fail",
-               "✗ verification failed (" + (ev.check || "") + ") — change reverted"));
+               "✗ verification failed (" + (ev.check || "") + ") — " + (ev.delivery === "not applied" ? "not applied to your files" : "change reverted")));
         if (ev.text) add(el("div", "tool-output", ev.text));
         break;
       }
@@ -201,7 +309,7 @@
         add(el("div", "badge info", "⇧ " + (ev.text || "escalated")));
         break;
       case "confirm_request":
-        setWorking(false);
+        if (working) working.lastChild.textContent = "Waiting for your approval…";
         addConfirm(ev);
         break;
       case "escalation_offer":
@@ -236,6 +344,9 @@
         // Slash commands are answered with `ack` and produce NO turn_end, so the
         // busy indicator must be cleared here or it would spin forever.
         setWorking(false);
+        if (ev.mode) modeSelect.value = ev.mode;
+        if (ev.role) roleSelect.value = ev.role;
+        if (ev.provider !== undefined) renderHeader(ev);
         if (ev.reverted && ev.reverted.length) {
           add(el("div", "notice", "Reverted: " + ev.reverted.join(", ")));
         } else if (ev.usage) {
@@ -269,6 +380,7 @@
       case "clear":
         log.textContent = "";
         streamBubble = null;
+        parts.clear(); working = null;
         renderChanged([]);
         setWorking(false);
         break;
@@ -304,12 +416,21 @@
     }
     vscode.postMessage({ type: "user", text });
     input.value = "";
+    vscode.setState({ draft: "" });
   }
 
   sendBtn.onclick = send;
+  document.getElementById("stop").onclick = () => vscode.postMessage({ type: "stop" });
+  input.addEventListener("input", () => vscode.setState({ draft: input.value }));
+  modelSelect.onchange = () => {
+    const [provider, model] = JSON.parse(modelSelect.value);
+    vscode.postMessage({ type: "select", provider, model });
+  };
+  modeSelect.onchange = () => vscode.postMessage({ type: "select", mode: modeSelect.value });
+  roleSelect.onchange = () => vscode.postMessage({ type: "select", role: roleSelect.value });
   input.addEventListener("keydown", (e) => {
     // Enter sends; Shift+Enter is a newline (the convention people expect in chat UIs).
-    if (e.key === "Enter" && !e.shiftKey) {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       send();
     }

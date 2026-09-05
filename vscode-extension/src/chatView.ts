@@ -10,6 +10,7 @@
  */
 
 import * as vscode from "vscode";
+import * as path from "path";
 import { AgentProcess } from "./agentProcess";
 import { AgentSettings, chatArgs, runArgs } from "./config";
 import { collectDiagnostics } from "./diagnostics";
@@ -26,13 +27,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private agent = new AgentProcess();
   private repo = "";
   private changed = new Set<string>();
-  private sessionInfo?: { id: string; provider: string; model: string; verify: string };
+  private sessionInfo?: { id: string; provider: string; model: string; verify: string; mode?: string; role?: string };
   /** True while a turn is in flight — an exit here is a CRASH, not a normal end. */
   private inTurn = false;
   private stoppedByUser = false;
   /** An `error` event means the agent refused ON PURPOSE (dirty tree, bad provider).
    *  The exit that follows is a clean shutdown, NOT a crash — don't cry wolf. */
   private sawError = false;
+  private replay: AgentEvent[] = [];
+  private pendingStart?: Promise<boolean>;
+  private manifests = new Map<string, string>();
+  private sessionChange?: Promise<void>;
+  private questionCancellation?: vscode.CancellationTokenSource;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -80,11 +86,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     <span id="hdr-verify" class="pill"></span>
     <span id="hdr-session" class="pill dim"></span>
   </div>
+  <div id="selectors">
+    <label>Model<select id="model-select" aria-label="Model"><option value="">Loading models…</option></select></label>
+    <label>Mode<select id="mode-select" aria-label="Mode"><option value="ask">Ask</option><option value="plan">Plan</option><option value="build">Build</option></select></label>
+    <label>Role<select id="role-select" aria-label="Role"><option>general</option><option>explorer</option><option>implementer</option><option>reviewer</option></select></label>
+  </div>
   <div id="log" role="log" aria-live="polite"></div>
   <div id="changed" class="changed hidden"></div>
   <div id="composer">
-    <textarea id="input" rows="2" placeholder="Ask Apprentice to change something…"></textarea>
+    <textarea id="input" rows="3" aria-label="Message" placeholder="Ask about your code, make a plan, or select Build to make changes…"></textarea>
     <button id="send" title="Send (Enter)">Send</button>
+    <button id="stop" class="secondary" title="Cancel the current task">Stop</button>
   </div>
   <script nonce="${nonce}" src="${asset("main.js")}"></script>
 </body>
@@ -95,9 +107,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async onMessage(msg: any): Promise<void> {
     switch (msg?.type) {
       case "ready": {
+        if (this.sessionChange) await this.sessionChange;
         // The webview reloads when the view is hidden/shown; re-sync the state it
         // can't know by itself.
-        this.post({ type: "busy", busy: false });
+        this.post({ type: "busy", busy: this.inTurn });
+        this.post({ type: "event", event: { type: "history_v2", events: this.replay } });
+        if (!this.agent.running) {
+          const folder = await pickFolder();
+          if (folder) await this.ensureStarted(folder);
+        }
         this.post({ type: "changed", files: [...this.changed] });
         const c = vscode.workspace.getConfiguration("apprentice");
         this.post({
@@ -106,6 +124,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           model: this.sessionInfo?.model || c.get<string>("model") || "",
           verify: this.sessionInfo?.verify || c.get<string>("verify") || "",
           session: this.sessionInfo?.id || "",
+          mode: this.sessionInfo?.mode,
+          role: this.sessionInfo?.role,
         });
         break;
       }
@@ -114,18 +134,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       case "confirm":
         if (this.agent.running) {
-          this.agent.answerConfirm(Boolean(msg.allow));
+          this.agent.answerConfirm(Boolean(msg.allow), msg.request_id);
           // The agent resumes work after an approval — show the indicator again.
           if (msg.allow) this.post({ type: "busy", busy: true });
         }
         break;
       case "openDiff":
         if (this.repo && typeof msg.path === "string") {
-          await showDiff(this.repo, msg.path);
+          await showDiff(this.repo, msg.path, this.manifests.get(msg.path));
         }
         break;
       case "stop":
         this.stop();
+        break;
+      case "select":
+        if (this.inTurn) {
+          this.post({ type: "notice", text: "Stop or finish this task before changing its model, mode, or role." });
+          return;
+        }
+        if (this.agent.running) this.agent.sendControl({ type: "settings", provider: msg.provider, model: msg.model, mode: msg.mode, role: msg.role });
+        break;
+      case "copy":
+        if (typeof msg.text === "string") await vscode.env.clipboard.writeText(msg.text);
         break;
     }
   }
@@ -148,6 +178,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     resume?: string,
     headless?: { task: string; doneWhen: string; autoApprove: boolean }
   ): Promise<boolean> {
+    if (!vscode.workspace.isTrusted) {
+      this.post({ type: "notice", text: "Trust this workspace before starting a coding agent." });
+      return false;
+    }
+    if (this.pendingStart) return this.pendingStart;
+    this.pendingStart = this.startSession(folder, resume, headless);
+    try { return await this.pendingStart; } finally { this.pendingStart = undefined; }
+  }
+
+  private async startSession(folder: vscode.WorkspaceFolder, resume?: string,
+    headless?: { task: string; doneWhen: string; autoApprove: boolean }): Promise<boolean> {
     if (this.agent.running) return true;
     const c = vscode.workspace.getConfiguration("apprentice");
     let resolved;
@@ -216,7 +257,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         crashed,
         text: crashed
           ? `The agent stopped unexpectedly mid-task (exit code ${code ?? "unknown"}). ` +
-            `Nothing further was changed; your files are as the last verified turn left them.`
+            `Unfinished OpenCode edits remain isolated. Review the last delivery result and log.`
           : "Agent session ended.",
       });
       this.inTurn = false;
@@ -230,6 +271,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     try {
       this.agent.start({ command: resolved.command, args, cwd: this.repo });
+      await this.agent.waitUntilReady();
     } catch (err) {
       this.post({ type: "notice", level: "error", text: String(err) });
       return false;
@@ -239,25 +281,47 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
   private async sendUser(text: string): Promise<void> {
     if (!text.trim()) return;
-    // Mid-turn, this is STEERING: the agent picks it up between steps and changes
-    // course, instead of the message queuing until the whole task finishes.
+    if (this.sessionChange) await this.sessionChange;
+    // Mid-turn requests queue; Stop discards that queue if the task is replaced.
     if (this.agent.running && this.inTurn) {
       this.agent.send(text);
-      this.post({ type: "steering", text });
+      this.post({ type: "notice", text: "Message queued. Use Stop first if it replaces the current task." });
       return;
     }
     const folder = await pickFolder();
     if (!folder) return;
-    if (!(await this.ensureStarted(folder))) return;
+    if (!(await this.ensureStarted(folder))) { this.post({ type: "busy", busy: false }); return; }
+    if (vscode.workspace.textDocuments.some(doc => {
+      const relative = path.relative(this.repo, doc.uri.fsPath);
+      return doc.isDirty && doc.uri.scheme === "file" && !relative.startsWith("..") && !path.isAbsolute(relative);
+    })) {
+      this.post({ type: "notice", text: "Save your edited files before sending. Apprentice snapshots files on disk, not unsaved buffers." });
+      this.post({ type: "busy", busy: false });
+      return;
+    }
     this.inTurn = true;
     this.post({ type: "busy", busy: true });
-    this.agent.send(text);
+    if (this.agent.version >= 2) this.agent.sendControl({ type: "user", text, diagnostics: collectDiagnostics(this.repo) });
+    else this.agent.send(text);
   }
 
-  async newSession(): Promise<void> {
-    this.stop();
+  private changeSession(action: () => Promise<void>): Promise<void> {
+    const pending = (this.sessionChange || Promise.resolve()).then(action);
+    this.sessionChange = pending;
+    void pending.finally(() => { if (this.sessionChange === pending) this.sessionChange = undefined; }).catch(() => undefined);
+    return pending;
+  }
+
+  newSession(): Promise<void> { return this.changeSession(() => this.newSessionNow()); }
+  private async newSessionNow(): Promise<void> {
+    if (this.pendingStart) await this.pendingStart;
+    this.stoppedByUser = true;
+    await this.agent.stop();
     this.changed.clear();
+    this.replay = [];
     this.post({ type: "clear" });
+    const folder = await pickFolder();
+    if (folder) await this.ensureStarted(folder);
   }
 
   /**
@@ -266,41 +330,61 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
    */
   async startHeadless(folder: vscode.WorkspaceFolder, task: string,
                       doneWhen: string): Promise<void> {
-    this.stop();
+    return this.changeSession(() => this.startHeadlessNow(folder, task, doneWhen));
+  }
+  private async startHeadlessNow(folder: vscode.WorkspaceFolder, task: string, doneWhen: string): Promise<void> {
+    if (this.pendingStart) await this.pendingStart;
+    this.stoppedByUser = true;
+    await this.agent.stop();
     this.changed.clear();
+    this.replay = [];
     this.post({ type: "clear" });
     this.inTurn = true;
     this.post({ type: "busy", busy: true });
     const ok = await this.ensureStarted(folder, undefined,
-                                        { task, doneWhen, autoApprove: true });
+                                        { task, doneWhen, autoApprove: false });
     if (!ok) {
       this.inTurn = false;
       this.post({ type: "busy", busy: false });
     }
   }
 
-  async resume(sessionId: string): Promise<void> {
+  resume(sessionId: string): Promise<void> { return this.changeSession(() => this.resumeNow(sessionId)); }
+  private async resumeNow(sessionId: string): Promise<void> {
     const folder = await pickFolder();
     if (!folder) return;
-    this.stop();
+    if (this.pendingStart) await this.pendingStart;
+    this.stoppedByUser = true;
+    await this.agent.stop();
+    this.replay = [];
+    this.changed.clear();
     this.post({ type: "clear" });
     await this.ensureStarted(folder, sessionId);
   }
 
   stop(): void {
+    this.questionCancellation?.cancel();
     if (this.agent.running) {
       this.stoppedByUser = true;
-      this.agent.stop();
-      this.post({ type: "notice", level: "warn", text: "Stopped." });
+      this.agent.cancel();
+      this.post({ type: "notice", level: "warn", text: "Stopping the task and cleaning up…" });
     }
-    this.post({ type: "busy", busy: false });
   }
 
   /** Send a slash command (/undo, /cost, /files) to a running session. */
   sendCommand(line: string): boolean {
     if (!this.agent.running) return false;
+    if (this.inTurn) {
+      this.post({ type: "notice", text: "Finish or stop the active task before sending a session command." });
+      return true;
+    }
     this.agent.send(line);
     return true;
+  }
+
+  async selectModel(provider: string, model: string): Promise<void> {
+    const folder = await pickFolder();
+    if (folder && await this.ensureStarted(folder)) await this.onMessage({ type: "select", provider, model });
   }
 
   reveal(): void {
@@ -308,17 +392,53 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   }
 
   dispose(): void {
-    this.agent.stop();
+    void this.agent.stop();
   }
 
   // --- agent events ---------------------------------------------------------
   private onAgentEvent(ev: AgentEvent): void {
+    if (ev.type !== "session_start" && ev.session_id && this.sessionInfo && ev.session_id !== this.sessionInfo.id) return;
+    if (ev.type === "history_v2") {
+      const catalog = this.replay.filter(item => item.type === "catalog");
+      this.replay = [...catalog, ...(ev.events as AgentEvent[])];
+      this.changed.clear(); this.manifests.clear();
+      for (const item of this.replay) {
+        if (item.type === "delivery" && item.applied) for (const file of item.files_changed as string[]) {
+          this.changed.add(file); this.manifests.set(file, String(item.manifest_path));
+        }
+        if (item.type === "ack" && item.reverted) for (const file of item.reverted as string[]) {
+          this.changed.delete(file); this.manifests.delete(file);
+        }
+      }
+      ev = { ...ev, events: this.replay };
+      this.post({ type: "changed", files: [...this.changed] });
+    }
+    else if (ev.type === "message_part" || ev.type === "tool_part") {
+      const index = this.replay.findIndex(item => item.id === ev.id);
+      if (index < 0) this.replay.push(ev); else this.replay[index] = ev;
+    } else if (ev.type === "message_remove") this.replay = this.replay.filter(item => item.message_id !== ev.message_id);
+    else if (ev.type === "part_remove") this.replay = this.replay.filter(item => item.id !== ev.id);
+    else if (!["turn_end", "task_status", "session_start", "session_end"].includes(ev.type)) this.replay.push(ev);
     switch (ev.type) {
+      case "task_status":
+        this.inTurn = true;
+        this.post({ type: "busy", busy: true });
+        break;
+      case "delivery":
+        if (ev.applied && typeof ev.manifest_path === "string") for (const file of ev.files_changed as string[]) this.manifests.set(file, ev.manifest_path);
+        if (ev.applied) for (const file of ev.files_changed as string[]) this.changed.add(file);
+        this.post({ type: "changed", files: [...this.changed] });
+        break;
+      case "question_request":
+        void this.answerQuestion(ev);
+        break;
       case "session_start": {
         const s = ev as SessionStartEvent;
+        this.stoppedByUser = false;
+        this.manifests.clear();
         this.repo = s.repo || this.repo;
         this.sessionInfo = { id: s.session_id, provider: s.provider,
-                             model: s.model, verify: s.verify };
+                             model: s.model, verify: s.verify, mode: String(ev.mode || "ask"), role: String(ev.role || "general") };
         void this.context.workspaceState.update(LAST_SESSION_KEY, s.session_id);
         void vscode.commands.executeCommand("setContext", "apprentice.running", true);
         this.post({ type: "header", provider: s.provider, model: s.model,
@@ -336,7 +456,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         break;
       }
       case "turn_end": {
+        this.questionCancellation?.cancel();
         this.inTurn = false;
+        this.stoppedByUser = false;
+        this.sawError = false;
         this.post({ type: "busy", busy: false });
         this.onUsage((ev as any).usage as Usage);
         break;
@@ -361,9 +484,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         } catch (err) {
           result = `ERROR: ${String(err)}`;
         }
-        if (this.agent.running) this.agent.send(JSON.stringify({ id: req.id, result }));
+        if (this.agent.running) this.agent.sendControl({ id: req.id, result });
         break;
       }
+      case "ack":
+        this.inTurn = false;
+        if (this.sessionInfo) for (const key of ["provider", "model", "mode", "role", "verify"] as const) {
+          if (typeof ev[key] === "string") this.sessionInfo[key] = String(ev[key]);
+        }
+        this.post({ type: "busy", busy: false });
+        if (ev.reverted) for (const file of ev.reverted as string[]) { this.changed.delete(file); this.manifests.delete(file); }
+        this.post({ type: "changed", files: [...this.changed] });
+        break;
       case "error": {
         // The agent refuses a dirty/non-git tree — make that actionable instead of raw.
         this.sawError = true;
@@ -375,6 +507,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       }
     }
     this.post({ type: "event", event: ev });
+  }
+
+  private async answerQuestion(ev: AgentEvent): Promise<void> {
+    this.questionCancellation?.cancel();
+    const cancellation = new vscode.CancellationTokenSource();
+    this.questionCancellation = cancellation;
+    try {
+    const answers: string[][] = [];
+    for (const question of ev.questions as { question: string; options: { label: string; description: string }[]; multiple?: boolean }[]) {
+      const value = await vscode.window.showInputBox({ prompt: question.question,
+        placeHolder: (question.options || []).map(item => item.label).join(" / "), ignoreFocusOut: true }, cancellation.token);
+      if (value === undefined) {
+        if (this.agent.running) this.agent.sendControl({ type: "answer", request_id: ev.request_id, allow: false });
+        return;
+      }
+      answers.push([value]);
+    }
+    if (this.agent.running) this.agent.sendControl({ type: "answer", request_id: ev.request_id, answers });
+    } finally {
+      cancellation.dispose();
+      if (this.questionCancellation === cancellation) this.questionCancellation = undefined;
+    }
   }
 
   /** A mid-turn death needs an actionable notification, not just a panel line. */

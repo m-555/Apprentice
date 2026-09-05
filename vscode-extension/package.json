@@ -1,8 +1,8 @@
 {
   "name": "apprentice-vscode",
   "displayName": "Apprentice",
-  "description": "A coding agent driven by your own model (local or cloud) \u2014 every edit machine-verified against your tests, and reverted if it breaks them.",
-  "version": "0.1.3",
+  "description": "OpenCode-powered coding with your models, read-only chat, isolated edits, project checks, and task-specific diffs.",
+  "version": "0.2.0",
   "publisher": "m-555",
   "license": "MIT",
   "repository": {
@@ -21,7 +21,7 @@
   "keywords": [
     "agent",
     "llm",
-    "ollama",
+    "opencode",
     "local",
     "codegen"
   ],
@@ -235,9 +235,9 @@
           ],
           "enumDescriptions": [
             "Use Apprentice's configured default",
-            "No checking \u2014 edits land immediately",
+            "No checking; candidate edits are delivered at task completion",
             "Edited files must compile/lint",
-            "Compile/lint AND your project's tests must pass"
+            "Your project's configured acceptance command must pass"
           ],
           "default": "",
           "description": "How strictly the agent's changes are verified before they survive a turn."
@@ -255,7 +255,7 @@
         "apprentice.allowDirty": {
           "type": "boolean",
           "default": false,
-          "description": "Allow starting on a non-git or uncommitted working tree. Off by default so git stays your undo."
+          "description": "Legacy backend only. OpenCode requires Git with a commit and preserves current dirty files automatically."
         }
       }
     }
@@ -265,7 +265,8 @@
     "watch": "node esbuild.js --watch",
     "typecheck": "tsc --noEmit",
     "test": "node --test \"src/test/*.test.js\"",
-    "package": "npm run build && npx @vscode/vsce package --no-dependencies",
+    "test:host": "node src/test/run-host.js",
+    "package": "npm run build && npx @vscode/vsce@3.9.2 package --no-dependencies",
     "vscode:prepublish": "npm run build"
   },
   "devDependencies": {
