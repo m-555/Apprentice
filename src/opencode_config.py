@@ -16,6 +16,11 @@ read. Preserve confirmed findings through compaction. If no new evidence is gain
 change approach or give the answer you can support and name the remaining gap.
 For implementation, work only on the requested change. Do not commit, push, weaken
 acceptance tests, or modify dependencies without explicit permission.
+Inspect only enough code to locate the contract, then make the first useful edit before
+extended analysis. Use tools or tests for arithmetic and runtime details instead of
+repeatedly calculating them in private reasoning. If the response budget is getting
+tight, stop investigating and give a concise, substantive status with the exact next
+step; never consume the whole output budget without acting or answering.
 Apprentice independently verifies and delivers your changes; never claim that delivery
 or checks succeeded before their results exist. Finish with a substantive answer.
 The selected role focuses your responsibilities; it does not authorize extra work.
@@ -55,7 +60,7 @@ def catalog(cfg: dict) -> list[dict]:
                 continue
             local = urlparse(item.get("base_url", "")).hostname in ("127.0.0.1", "localhost", "::1")
             context = int(item.get("context_length", 16384 if "deepseek" in model.lower() else 32768))
-            output = int(item.get("max_output_tokens", min(4096, context // 8)))
+            output = int(item.get("max_output_tokens", 8192 if local else min(4096, context // 8)))
             if context < 4096 or not 256 <= output < context - 2000:
                 raise ValueError(f"Invalid context/output limits for {provider}/{model}.")
             result.append({"provider": provider, "model": alias or model, "model_id": model,

@@ -381,6 +381,8 @@ def _chat_openai(name: str, messages: list[dict[str, Any]], tools: list[dict[str
     for key in ("temperature", "top_p", "max_tokens"):
         if key in opts:
             body[key] = opts[key]
+    if "max_tokens" not in body and p.get("max_output_tokens"):
+        body["max_tokens"] = int(p["max_output_tokens"])
     t0 = time.monotonic()
     try:
         if _streaming_enabled(p, on_delta):

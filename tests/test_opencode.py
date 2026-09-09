@@ -83,6 +83,7 @@ class RepositoryTest(RepositoryFixture):
 
     def test_catalog_and_mode_permissions(self):
         selected = opencode_config.resolve(self.cfg, "qwen")
+        self.assertEqual(selected["output"], 8192)
         config = opencode_config.configuration(self.cfg, selected, "ask")
         self.assertEqual(config["permission"]["edit"], "deny")
         self.assertEqual(config["permission"]["bash"], "deny")
@@ -187,7 +188,7 @@ class TranscriptTest(unittest.TestCase):
         self.assertEqual(out[-1]["text"], "Final answer")
 
     def test_no_final_answer_is_a_failure(self):
-        with self.assertRaisesRegex(RuntimeError, "final answer"):
+        with self.assertRaisesRegex(RuntimeError, "output-token limit"):
             final_answer([{"info": {"role": "assistant", "finish": "length"}, "parts": []}])
 
 

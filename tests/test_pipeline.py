@@ -322,6 +322,43 @@ def test_qwen_builtin_uses_configured_llama_cpp_kind():
         providers.call_openai_compatible, providers.call_ollama = old_openai, old_ollama
 
 
+def test_openai_compatible_uses_provider_output_limit():
+    captured = []
+    old_post = providers._post_json
+    providers._post_json = lambda url, body, headers, timeout: (
+        captured.append(body) or {"choices": [{"message": {"content": "ok"}}]})
+    cfg = {"providers": {"local": {"enabled": True, "kind": "openai-compatible",
+                                     "base_url": "http://127.0.0.1:8080/v1",
+                                     "model": "qwen", "max_output_tokens": 8192}}}
+    try:
+        assert providers.call_openai_compatible("local", "system", "user", cfg) == "ok"
+        assert captured[0]["max_tokens"] == 8192
+
+        captured.clear()
+        cfg["providers"]["local"]["options"] = {"max_tokens": 1024}
+        providers.call_openai_compatible("local", "system", "user", cfg)
+        assert captured[0]["max_tokens"] == 1024
+    finally:
+        providers._post_json = old_post
+
+
+def test_agent_chat_uses_provider_output_limit():
+    captured = []
+    old_post = providers._post_json
+    providers._post_json = lambda url, body, headers, timeout: (
+        captured.append(body) or {"choices": [{"message": {"content": "done"}}]})
+    cfg = {"providers": {"local": {"enabled": True, "kind": "openai-compatible",
+                                     "base_url": "http://127.0.0.1:8080/v1",
+                                     "model": "deepseek", "max_output_tokens": 8192}}}
+    try:
+        turn = chat_providers._chat_openai("local", [{"role": "user", "content": "task"}],
+                                           [], cfg, None, "")
+        assert turn.content == "done"
+        assert captured[0]["max_tokens"] == 8192
+    finally:
+        providers._post_json = old_post
+
+
 def test_resolve_model_tiers():
     p = {"models": {"flash": "m-flash", "pro": "m-pro"}, "default_model": "flash"}
     assert providers._resolve_model(p, "pro") == "m-pro"        # tier alias

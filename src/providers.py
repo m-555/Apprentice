@@ -133,6 +133,8 @@ def call_openai_compatible(name: str, system: str, user: str, cfg: dict[str, Any
     for key in ("temperature", "top_p", "max_tokens"):
         if key in opts:
             body[key] = opts[key]
+    if "max_tokens" not in body and p.get("max_output_tokens"):
+        body["max_tokens"] = int(p["max_output_tokens"])
 
     t0 = time.monotonic()
     try:

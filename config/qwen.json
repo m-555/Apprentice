@@ -57,6 +57,8 @@
       "kind": "openai-compatible",
       "base_url": "http://127.0.0.1:8080/v1",
       "model": "qwen3.8-27b-q8-tuber",
+      "context_length": 32768,
+      "max_output_tokens": 8192,
       "timeout_s": 1800,
       "options": {
         "_note": "Passed to the OpenAI-compatible llama.cpp endpoint. LOW temperature is deliberate for deterministic code generation.",
@@ -70,6 +72,8 @@
       "kind": "openai-compatible",
       "base_url": "http://127.0.0.1:8080/v1",
       "model": "qwen3-coder-next-q4-k-m",
+      "context_length": 32768,
+      "max_output_tokens": 8192,
       "timeout_s": 1800,
       "options": {"temperature": 0.15, "top_p": 0.9},
       "_note": "Opt-in 79.7B MoE coding model. The compatible standalone runtime is currently CPU-only."

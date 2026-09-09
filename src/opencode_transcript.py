@@ -67,6 +67,8 @@ def final_answer(messages: list[dict]) -> str:
             continue
         if info.get("error"):
             raise RuntimeError(str(info["error"]))
+        if info.get("finish") == "length":
+            raise RuntimeError("The model exhausted its output-token limit before completing a user-facing answer. Retry with a narrower instruction or choose another model.")
         if info.get("finish") not in ("stop", "end_turn"):
             raise RuntimeError("The model stopped without a completed final answer.")
         text = "\n".join(p.get("text", "") for p in message["parts"]
