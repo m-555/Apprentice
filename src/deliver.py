@@ -19,9 +19,12 @@ Windows cmd quoting survives.
 
 from __future__ import annotations
 
+import os
 import re
+import signal
 import subprocess
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -100,20 +103,106 @@ def revert_apply(path: Path, original: str | None) -> None:
         path.write_text(original, encoding="utf-8")
 
 
-def run_test_cmd(repo: str, test_cmd: str, timeout_s: int = 300) -> tuple[int | None, str]:
-    """Run the project's acceptance command in `repo`. Executed via a script file (not
-    `cmd /c <string>`) so quoted multi-word args survive Windows re-tokenization."""
-    with tempfile.TemporaryDirectory() as tmp:
-        script = Path(tmp) / "qwen_test.cmd"
-        script.write_text("@echo off\r\n" + test_cmd + "\r\n", encoding="utf-8")
+# Grace period for a tree kill and for the reader thread to notice EOF.
+_KILL_GRACE_S = 5
+
+
+def _kill_process_tree(proc: "subprocess.Popen[str]") -> None:
+    """Kill the child AND everything it spawned.
+
+    `Popen.kill()` only stops the DIRECT child — here the `cmd.exe`/`sh` wrapper. The
+    grandchild that actually runs the tests survives, keeps the inherited stdout pipe
+    write-handle open, and any later read/`communicate()` then blocks forever: one hung
+    test wedges the whole server instead of timing out. Windows has no process groups,
+    so walk the tree with `taskkill /T`; POSIX kills the session group (the child is
+    started with start_new_session).
+    """
+    if proc.poll() is not None:
+        return
+    if os.name == "nt":
         try:
-            proc = subprocess.run(["cmd", "/c", str(script)], cwd=repo,
-                                  capture_output=True, text=True, timeout=timeout_s)
-            return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
-        except FileNotFoundError as exc:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           capture_output=True, timeout=_KILL_GRACE_S)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    else:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except OSError:
+            pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
+def _drain(stream, sink: list[str]) -> None:
+    """Read a child's output to EOF on a background thread, so a child that fills the
+    pipe buffer can never deadlock us and partial output survives a timeout kill."""
+    try:
+        for line in iter(stream.readline, ""):
+            sink.append(line)
+    except (OSError, ValueError):
+        pass
+
+
+def run_test_cmd(repo: str, test_cmd: str, timeout_s: int = 300) -> tuple[int | None, str]:
+    """Run the project's acceptance command in `repo`.
+
+    Returns (returncode, output). **returncode None means the command produced NO
+    verdict** — it timed out or could not be started. That is an INFRASTRUCTURE fault,
+    not a failing test: callers must not report it to a worker as a code defect.
+
+    Executed via a script file (not `cmd /c <string>`) so quoted multi-word args
+    survive Windows re-tokenization. This function is required to RETURN: output is
+    drained on a background thread and the whole process tree is killed on timeout, so
+    a hung or orphaned test runner cannot block the caller (see _kill_process_tree).
+    """
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        if os.name == "nt":
+            script = Path(tmp) / "qwen_test.cmd"
+            script.write_text("@echo off\r\n" + test_cmd + "\r\n", encoding="utf-8")
+            argv, extra = ["cmd", "/c", str(script)], {}
+        else:
+            script = Path(tmp) / "qwen_test.sh"
+            script.write_text("#!/bin/sh\n" + test_cmd + "\n", encoding="utf-8")
+            script.chmod(0o700)
+            argv, extra = ["/bin/sh", str(script)], {"start_new_session": True}
+        try:
+            # stdin=DEVNULL: never let a test inherit (and block on) the server's own
+            # stdin — that is the MCP JSON-RPC pipe, which never reaches EOF.
+            proc = subprocess.Popen(argv, cwd=repo, stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    text=True, errors="replace", **extra)
+        except (OSError, ValueError) as exc:
             return None, f"not found: {exc}"
+
+        chunks: list[str] = []
+        reader = threading.Thread(target=_drain, args=(proc.stdout, chunks), daemon=True)
+        reader.start()
+        timed_out = False
+        try:
+            proc.wait(timeout=timeout_s)
         except subprocess.TimeoutExpired:
-            return None, f"test_cmd timed out after {timeout_s}s"
+            timed_out = True
+            _kill_process_tree(proc)
+            try:
+                proc.wait(timeout=_KILL_GRACE_S)
+            except subprocess.TimeoutExpired:
+                pass
+        # Bounded join: if some stubborn grandchild still holds the pipe, the daemon
+        # thread is abandoned rather than allowed to hold up the caller.
+        reader.join(timeout=_KILL_GRACE_S)
+        try:
+            if proc.stdout:
+                proc.stdout.close()
+        except OSError:
+            pass
+        out = "".join(chunks)
+        if timed_out:
+            return None, (f"test_cmd timed out after {timeout_s}s; the process tree was "
+                          f"killed. Partial output:\n{out}")
+        return proc.returncode, out
 
 
 def load_repo_options(repo: str) -> dict[str, Any]:

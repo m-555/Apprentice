@@ -1742,6 +1742,92 @@ class _stdin:
         return False
 
 
+def test_run_test_cmd_kills_hung_process_tree():
+    """A hung test runner must never be able to wedge the server.
+
+    `subprocess.run(timeout=)` kills only the DIRECT cmd.exe/sh child. The grandchild
+    that actually runs the tests survives holding the inherited stdout pipe, and the
+    follow-up read then blocks forever — the timeout silently stops applying and one
+    hung test hangs the whole MCP server with the worker's code still applied.
+    Regression: return promptly, report NO verdict, and leave nothing running.
+    """
+    import time
+    repo = Path(tempfile.mkdtemp())
+    marker = repo / "survived.txt"
+    inner = ("import time, pathlib; time.sleep(6); "
+             "pathlib.Path(r'%s').write_text('survived')" % marker)
+    started = time.time()
+    rc, out = deliver.run_test_cmd(str(repo), f'"{sys.executable}" -c "{inner}"', 2)
+    elapsed = time.time() - started
+    assert rc is None, f"a timeout must report NO verdict, got rc={rc!r}"
+    assert elapsed < 20, f"run_test_cmd must return promptly, took {elapsed:.1f}s"
+    assert "timed out" in out, out
+    # The grandchild is dead, not merely orphaned: its marker never appears.
+    time.sleep(8)
+    assert not marker.exists(), "the grandchild survived the timeout kill"
+
+
+def test_delegate_no_verdict_is_not_bounced_to_worker():
+    """A command that yields no verdict (timed out / never started) is an
+    INFRASTRUCTURE fault, not a code defect. Revert (never leave unverified code
+    applied), report test_status="error", and do NOT spend worker retries asking a
+    model to fix a hung runner from a message containing no signal."""
+    import copy
+    tmp = Path(tempfile.mkdtemp())
+    _isolate(tmp)
+    repo = Path(tempfile.mkdtemp())
+    calls = []
+    old_cfg, old_run = server._CFG, deliver.run_test_cmd
+    server._CFG = copy.deepcopy(_CFG)
+    server._CFG["gate"]["max_retries"] = 2
+    server.PROVIDERS["qwen"] = (
+        lambda s, u, c, usage=None, model="":
+        calls.append(1) or "```python\ny = 9\n```")
+    deliver.run_test_cmd = lambda r, c, t: (None, "test_cmd timed out after 2s")
+    try:
+        out, info = server._apply_and_test(
+            task="t", role="py_implementer", tier="qwen", system="s", user="u",
+            output="```python\ny = 1\n```", repo=str(repo), apply_to="w.py",
+            apply_mode="create", test_cmd="hangs")
+        assert info["test_status"] == "error", info
+        assert not info["applied"], info
+        assert not (repo / "w.py").exists(), "tree must be left clean"
+        assert calls == [], "a hung runner must not burn worker retries"
+    finally:
+        server._CFG, deliver.run_test_cmd = old_cfg, old_run
+
+
+def test_delegate_reports_a_failed_revert_instead_of_raising():
+    """If the revert itself fails, the worker's unverified code is STILL in the user's
+    file. That must be REPORTED — a raising revert aborted the whole delegate and left
+    the file silently modified with the caller told only that the tool errored."""
+    import copy
+    tmp = Path(tempfile.mkdtemp())
+    _isolate(tmp)
+    repo = Path(tempfile.mkdtemp())
+    old_cfg, old_revert = server._CFG, deliver.revert_apply
+    server._CFG = copy.deepcopy(_CFG)
+    server._CFG["gate"]["max_retries"] = 1
+    server.PROVIDERS["qwen"] = (
+        lambda s, u, c, usage=None, model="": "```python\nz = 2\n```")
+
+    def boom(path, original):
+        raise OSError(32, "The process cannot access the file")
+
+    deliver.revert_apply = boom
+    try:
+        out, info = server._apply_and_test(
+            task="t", role="py_implementer", tier="qwen", system="s", user="u",
+            output="```python\nz = 1\n```", repo=str(repo), apply_to="x.py",
+            apply_mode="create",
+            test_cmd=f'"{sys.executable}" -c "import sys; sys.exit(1)"')
+        assert info["revert_failed"] is True, info
+        assert info["applied"] is True, "the file really is still modified"
+        assert "REVERT FAILED" in info["detail"], info["detail"]
+    finally:
+        server._CFG, deliver.revert_apply = old_cfg, old_revert
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

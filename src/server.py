@@ -218,6 +218,22 @@ def _delegate_cascade(task, role, prov, system, user, model=""):
     return final_output, result, attempts, prov
 
 
+def _safe_revert(state: dict[str, Any], info: dict[str, Any]) -> bool:
+    """Undo an applied candidate, turning a failed revert into a REPORT instead of an
+    exception. A raising revert would abort `delegate` with the worker's unverified
+    code still sitting in the user's file — the exact outcome this path exists to
+    prevent. Returns True when the tree is clean again."""
+    try:
+        deliver.revert_apply(state["path"], state["original"])
+    except OSError as exc:
+        info["revert_failed"] = True
+        info["detail"] = (f"REVERT FAILED ({exc}): {state['path']} still contains the "
+                          f"worker's unverified code — restore it manually.")
+        return False
+    info["applied"] = False
+    return True
+
+
 def _apply_and_test(task, role, tier, system, user, output, repo, apply_to,
                     apply_mode, test_cmd, model=""):
     """Wave-2 delivery: write the gate-passed code into the real file, run the
@@ -231,10 +247,11 @@ def _apply_and_test(task, role, tier, system, user, output, repo, apply_to,
     enabled/budget guards apply. Only after that does it fall back to the orchestrator.
 
     Returns (final_output, info) where info feeds the footer + metering:
-    {applied, test_status: ""|"pass"|"fail", attempts, detail, tier}.
+    {applied, test_status: ""|"pass"|"fail"|"error", attempts, detail, tier,
+    revert_failed}. "error" = the command gave NO verdict (timed out / never started).
     """
     info: dict[str, Any] = {"applied": False, "test_status": "", "attempts": 0,
-                            "detail": "", "tier": tier}
+                            "detail": "", "tier": tier, "revert_failed": False}
     code, _ = gate.extract_code(output)
     try:
         original, path = deliver.apply_code(repo, apply_to, code, apply_mode)
@@ -288,9 +305,20 @@ def _apply_and_test(task, role, tier, system, user, output, repo, apply_to,
                         except Exception:
                             pass
                     break
+                if rc is None:
+                    # No verdict: the command timed out or could not start. That is an
+                    # INFRASTRUCTURE fault, not a code defect. Revert anyway (never
+                    # leave unverified code applied), but do NOT bounce it to the
+                    # worker: it cannot fix a hung runner, and each bounce spends a
+                    # retry and a model call on a prompt containing no signal.
+                    if _safe_revert(state, info):
+                        info["detail"] = "\n".join((test_out or "").splitlines()[-12:])
+                    info["test_status"] = "error"
+                    break
                 # Red → revert BEFORE anything else; never leave the tree broken.
-                deliver.revert_apply(state["path"], state["original"])
-                info["applied"] = False
+                if not _safe_revert(state, info):
+                    info["test_status"] = "error"
+                    break
                 state["last_fail"] = (
                     f"The project acceptance command `{test_cmd}` FAILED "
                     f"(exit {rc}). Verbatim output:\n{test_out[-3000:]}")
@@ -320,7 +348,8 @@ def _apply_and_test(task, role, tier, system, user, output, repo, apply_to,
         if usage_acc["worker_calls"]:
             metering.record({"tier": prov, "model": mdl, "role": role,
                              "mode": "apply_test",
-                             "test_status": "pass" if passed else "fail",
+                             "test_status": (info["test_status"]
+                                             or ("pass" if passed else "fail")),
                              "attempts": info["attempts"], **usage_acc,
                              **metering.task_ref(task)}, _CFG)
         return passed
@@ -328,6 +357,11 @@ def _apply_and_test(task, role, tier, system, user, output, repo, apply_to,
     # Requested tier first (the initial candidate is already applied).
     if run_tier(tier, model, output, True,
                 int(_CFG.get("gate", {}).get("max_retries", 2))):
+        return state["tested"], info
+
+    # A dead acceptance command (or a file we could not restore) is not something a
+    # stronger model can fix — escalating would spend a cloud tier on the same fault.
+    if info["test_status"] == "error":
         return state["tested"], info
 
     # Persistent test failure → escalate through the cascade (same guards as the gate
@@ -464,14 +498,24 @@ def delegate(task: str, role: str, provider: str = "", context: str = "",
             task, role, tier, system, user, final_output, repo, apply_to,
             apply_mode, test_cmd, model)
         apply_note = f" applied={str(ainfo['applied']).lower()} apply_to={apply_to}"
-        if test_cmd:
+        if not ainfo["applied"] and not ainfo["test_status"]:
+            # apply_code itself failed, so no test ever ran. Report WHY — this used to
+            # be swallowed whenever test_cmd was set, leaving a bare applied=false.
+            apply_note += f" ({ainfo['detail']})"
+        elif test_cmd:
             apply_note += f" test={ainfo['test_status']} test_attempts={ainfo['attempts']}"
             if ainfo.get("tier") and ainfo["tier"] != tier:
                 # A persistent test failure escalated through the cascade — the code
                 # that (maybe) passed came from this tier, not the gate-stage one.
                 apply_note += f" test_tier={ainfo['tier']}"
                 tier = ainfo["tier"]
-            if ainfo["test_status"] == "fail":
+            if ainfo.get("revert_failed"):
+                apply_note += f" — {ainfo['detail']}"
+            elif ainfo["test_status"] == "error":
+                apply_note += (f" — acceptance command produced NO verdict (timeout or "
+                               f"could not start); REVERTED, worker not retried:\n"
+                               f"{ainfo['detail']}")
+            elif ainfo["test_status"] == "fail":
                 apply_note += (f" — REVERTED; review needed. Last test output:\n"
                                f"{ainfo['detail']}")
         elif ainfo["detail"]:
