@@ -30,6 +30,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private sessionInfo?: { id: string; provider: string; model: string; verify: string; mode?: string; role?: string };
   /** True while a turn is in flight — an exit here is a CRASH, not a normal end. */
   private inTurn = false;
+  /** Whether the model reasons privately before answering. Off matches the router default. */
+  private thinking = false;
   private stoppedByUser = false;
   /** An `error` event means the agent refused ON PURPOSE (dirty tree, bad provider).
    *  The exit that follows is a clean shutdown, NOT a crash — don't cry wolf. */
@@ -90,6 +92,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     <label>Model<select id="model-select" aria-label="Model"><option value="">Loading models…</option></select></label>
     <label>Mode<select id="mode-select" aria-label="Mode"><option value="ask">Ask</option><option value="plan">Plan</option><option value="build">Build</option></select></label>
     <label>Role<select id="role-select" aria-label="Role"><option>general</option><option>explorer</option><option>implementer</option><option>reviewer</option></select></label>
+    <button id="thinking" class="secondary" aria-pressed="false" title="Let the model reason privately before answering">Thinking: off</button>
   </div>
   <div id="log" role="log" aria-live="polite"></div>
   <div id="changed" class="changed hidden"></div>
@@ -112,6 +115,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // can't know by itself.
         this.post({ type: "busy", busy: this.inTurn });
         this.post({ type: "event", event: { type: "history_v2", events: this.replay } });
+        this.post({ type: "event", event: { type: "thinking", enabled: this.thinking } });
         if (!this.agent.running) {
           const folder = await pickFolder();
           if (folder) await this.ensureStarted(folder);
@@ -144,6 +148,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
           await showDiff(this.repo, msg.path, this.manifests.get(msg.path));
         }
         break;
+      case "setThinking": {
+        // Settings travel on the control channel, so they are never mistaken for a
+        // message to the model or for steering a running turn.
+        try {
+          this.agent.sendControl({ type: "control", action: "set_thinking", enabled: msg.enabled });
+        } catch {
+          // Not running yet: the preference is applied when the session starts.
+        }
+        this.thinking = Boolean(msg.enabled);
+        this.post({ type: "event", event: { type: "thinking", enabled: this.thinking } });
+        break;
+      }
       case "stop":
         this.stop();
         break;
@@ -418,8 +434,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       if (index < 0) this.replay.push(ev); else this.replay[index] = ev;
     } else if (ev.type === "message_remove") this.replay = this.replay.filter(item => item.message_id !== ev.message_id);
     else if (ev.type === "part_remove") this.replay = this.replay.filter(item => item.id !== ev.id);
-    else if (!["turn_end", "task_status", "session_start", "session_end"].includes(ev.type)) this.replay.push(ev);
+    else if (!["turn_end", "task_status", "session_start", "session_end", "thinking"].includes(ev.type)) this.replay.push(ev);
     switch (ev.type) {
+      case "thinking":
+        this.thinking = Boolean((ev as { enabled?: unknown }).enabled);
+        break;
       case "task_status":
         this.inTurn = true;
         this.post({ type: "busy", busy: true });

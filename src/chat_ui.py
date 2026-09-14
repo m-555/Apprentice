@@ -75,6 +75,26 @@ def _render_json(ev: loop.Event) -> None:
 _EOF = object()   # sentinel: stdin closed
 
 
+def _handle_control(message: dict[str, Any]) -> None:
+    """Apply a `{"type": "control", ...}` line from the frontend.
+
+    Settings, not conversation: a control line never reaches the model and never
+    counts as steering. Kept deliberately small — one action, no side effects beyond
+    the setting itself.
+    """
+    if message.get("action") != "set_thinking":
+        return
+    import paths
+    import thinking
+    enabled = thinking.set_preference(message.get("enabled"))
+    router = None
+    if enabled is not None:
+        # chat/assign run through OpenCode, which builds its own request bodies, so the
+        # only way this reaches them is the router's shared default.
+        router = thinking.set_router(paths.load_config(), enabled)
+    emit({"type": "thinking", "enabled": enabled, "router": router})
+
+
 class StdinBroker:
     """Single owner of stdin for `--json` mode.
 
@@ -117,6 +137,14 @@ class StdinBroker:
                         if q is not None:
                             q.put(str(obj.get("result", "")))
                             continue
+                    # A control line is a setting, not something the model should read.
+                    # Swallow it so it can never surface as a steering message.
+                    if isinstance(obj, dict) and obj.get("type") == "control":
+                        try:
+                            _handle_control(obj)
+                        except Exception:  # a bad setting must not kill the session
+                            pass
+                        continue
                 (self._answers if self._awaiting.is_set() else self._steer).put(line)
         finally:
             # stdin closed: waiters must be released, or the session hangs forever

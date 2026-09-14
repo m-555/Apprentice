@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import json
 import os
+
+import thinking
 import time
 import urllib.error
 import urllib.request
@@ -135,6 +137,9 @@ def call_openai_compatible(name: str, system: str, user: str, cfg: dict[str, Any
             body[key] = opts[key]
     if "max_tokens" not in body and p.get("max_output_tokens"):
         body["max_tokens"] = int(p["max_output_tokens"])
+    # Unset = say nothing and let the router's default stand.
+    thinking.apply_to_body(body, thinking.coerce(p.get("thinking")) if "thinking" in p
+                           else thinking.preference())
 
     t0 = time.monotonic()
     try:

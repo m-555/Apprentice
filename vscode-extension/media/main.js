@@ -223,6 +223,29 @@
         if (stick) log.scrollTop = log.scrollHeight;
         break;
       }
+      case "reasoning_part": {
+        let node = parts.get(ev.id);
+        if (!node) {
+          node = el("details", "tool-card reasoning");
+          node.appendChild(el("summary"));
+          node.appendChild(el("pre", "tool-output"));
+          node.dataset.messageId = ev.message_id;
+          parts.set(ev.id, node);
+          add(node);
+        }
+        node.firstChild.textContent = "Thinking";
+        node.lastChild.textContent = ev.text || "";
+        break;
+      }
+      case "thinking": {
+        const button = document.getElementById("thinking");
+        if (button) {
+          button.textContent = ev.enabled ? "Thinking: on" : "Thinking: off";
+          button.setAttribute("aria-pressed", ev.enabled ? "true" : "false");
+          button.classList.toggle("on", Boolean(ev.enabled));
+        }
+        break;
+      }
       case "tool_part": {
         let node = parts.get(ev.id);
         if (!node) {
@@ -421,6 +444,10 @@
 
   sendBtn.onclick = send;
   document.getElementById("stop").onclick = () => vscode.postMessage({ type: "stop" });
+  document.getElementById("thinking").onclick = (event) => {
+    const on = event.currentTarget.getAttribute("aria-pressed") !== "true";
+    vscode.postMessage({ type: "setThinking", enabled: on });
+  };
   input.addEventListener("input", () => vscode.setState({ draft: input.value }));
   modelSelect.onchange = () => {
     const [provider, model] = JSON.parse(modelSelect.value);

@@ -242,3 +242,8 @@ button.secondary:hover { background: var(--vscode-button-secondaryHoverBackgroun
 .code-block { position: relative; margin: 10px 0; padding: 32px 12px 12px; background: var(--vscode-textCodeBlock-background); border-radius: 8px; overflow: auto; }
 .code-block pre { margin: 0; white-space: pre; font-family: var(--vscode-editor-font-family); font-size: var(--vscode-editor-font-size); }
 .copy-code { position: absolute; right: 6px; top: 4px; font-size: 11px; padding: 3px 8px; }
+
+/* The model's private deliberation: present, but quieter than an action it took. */
+.tool-card.reasoning { opacity: 0.85; }
+.tool-card.reasoning > summary { font-style: italic; }
+#thinking.on { color: var(--vscode-charts-green, #3fb950); }

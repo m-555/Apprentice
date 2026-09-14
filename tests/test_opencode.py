@@ -172,9 +172,38 @@ class TranscriptTest(unittest.TestCase):
         projector.apply({"type": "message.updated", "properties": {"info": {
             "id": "m", "role": "assistant", "summary": True}}})
         self.assertEqual(out[-1]["type"], "message_remove")
+        # Reasoning belongs to an INTERNAL (summary) message here, so it must still
+        # produce nothing: the filter is about the message, not the part kind.
+        before = len(out)
         projector.apply({"type": "message.part.updated", "properties": {"part": {
             "id": "r", "messageID": "m", "type": "reasoning", "text": "scratchpad"}}})
-        self.assertNotIn("r", projector.parts)
+        self.assertEqual(out[before:], [])
+
+    def test_reasoning_is_surfaced_as_its_own_collapsible_kind(self):
+        out = []
+        projector = Transcript(out.append)
+        projector.apply({"type": "message.updated", "properties": {"info": {
+            "id": "a", "role": "assistant"}}})
+        projector.apply({"type": "message.part.updated", "properties": {"part": {
+            "id": "r", "messageID": "a", "type": "reasoning", "text": "weighing "}}})
+        self.assertEqual(out[-1]["type"], "reasoning_part")
+        # It streams like text, and never merges into the answer.
+        projector.apply({"type": "message.part.delta", "properties": {
+            "partID": "r", "field": "text", "delta": "two options."}})
+        self.assertEqual(out[-1]["text"], "weighing two options.")
+        projector.apply({"type": "message.part.updated", "properties": {"part": {
+            "id": "t", "messageID": "a", "type": "text", "text": "Option B."}}})
+        self.assertEqual(out[-1]["type"], "message_part")
+        self.assertEqual(out[-1]["text"], "Option B.")
+
+    def test_blank_reasoning_is_not_emitted(self):
+        out = []
+        projector = Transcript(out.append)
+        projector.apply({"type": "message.updated", "properties": {"info": {
+            "id": "a", "role": "assistant"}}})
+        projector.apply({"type": "message.part.updated", "properties": {"part": {
+            "id": "r", "messageID": "a", "type": "reasoning", "text": "   "}}})
+        self.assertEqual(out[1:], [])
 
     def test_text_deltas_and_canonical_snapshot_do_not_duplicate(self):
         out = []

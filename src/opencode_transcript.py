@@ -25,13 +25,11 @@ class Transcript:
                         self.project(part)
         elif kind == "message.part.updated":
             part = props["part"]
-            if part["type"] == "reasoning":
-                return
             self.parts[part["id"]] = part
             self.project(part)
         elif kind == "message.part.delta":
             part = self.parts.get(props["partID"])
-            if part and part["type"] == "text" and props.get("field") == "text":
+            if part and part["type"] in ("text", "reasoning") and props.get("field") == "text":
                 part["text"] = part.get("text", "") + props["delta"]
                 self.project(part)
         elif kind == "message.part.removed":
@@ -48,6 +46,10 @@ class Transcript:
         base = {"id": part["id"], "message_id": part["messageID"]}
         if part["type"] == "text" and not part.get("synthetic") and not part.get("ignored"):
             self.emit({"type": "message_part", "role": "assistant", "text": part.get("text", ""), **base})
+        elif part["type"] == "reasoning" and part.get("text", "").strip():
+            # The model's own deliberation, emitted as its own kind so a UI can keep it
+            # collapsed. It is never folded into the answer text.
+            self.emit({"type": "reasoning_part", "text": part["text"], **base})
         elif part["type"] == "tool":
             state = part["state"]
             self.emit({"type": "tool_part", "tool": part["tool"], "status": state["status"],

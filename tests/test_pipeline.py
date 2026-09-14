@@ -1828,6 +1828,121 @@ def test_delegate_reports_a_failed_revert_instead_of_raising():
         server._CFG, deliver.revert_apply = old_cfg, old_revert
 
 
+def test_thinking_preference_parsing_and_body_injection():
+    """Unset must leave a request byte-identical, so an install that never touches
+    this keeps following the router exactly as before."""
+    import thinking
+    for on in (True, "on", "true", "1", "YES"):
+        assert thinking.coerce(on) is True, on
+    for off in (False, "off", "false", "0", "no"):
+        assert thinking.coerce(off, True) is False, off
+    assert thinking.coerce("auto", True) is None, "auto means follow the router"
+    assert thinking.coerce("nonsense", True) is True, "junk keeps the fallback"
+
+    body = {"model": "m", "messages": []}
+    assert thinking.apply_to_body(dict(body), None) == body, "unset must not touch it"
+    assert thinking.apply_to_body(dict(body), True)["chat_template_kwargs"] == {
+        "enable_thinking": True}
+    assert thinking.apply_to_body(dict(body), False)["chat_template_kwargs"] == {
+        "enable_thinking": False}
+    # other template kwargs survive
+    kept = thinking.apply_to_body({"chat_template_kwargs": {"foo": 1}}, True)
+    assert kept["chat_template_kwargs"] == {"foo": 1, "enable_thinking": True}
+
+    old = thinking.preference()
+    try:
+        assert thinking.set_preference("on") is True
+        assert thinking.preference() is True
+        assert thinking.apply_to_body(dict(body))["chat_template_kwargs"]["enable_thinking"]
+    finally:
+        thinking.set_preference(old if old is not None else "auto")
+
+
+def test_thinking_router_url_is_derived_from_the_configured_base():
+    import thinking
+    assert thinking.router_base({"runner": {"host": "http://127.0.0.1:8080/v1"}}) == "http://127.0.0.1:8080"
+    assert thinking.router_base({"runner": {"host": "http://127.0.0.1:8080/"}}) == "http://127.0.0.1:8080"
+    assert thinking.router_base({}) == "", "no host configured = nothing to publish to"
+
+
+def test_thinking_router_publish_survives_a_dead_router():
+    """A preference that cannot be published must not fail the session."""
+    import thinking
+    cfg = {"runner": {"host": "http://127.0.0.1:9/v1"}}  # port 9 = discard, nothing listens
+    assert thinking.set_router(cfg, True, timeout_s=1.0) is None
+
+
+def test_delegate_request_carries_the_thinking_preference():
+    """delegate builds its own body, so its choice outranks the router default."""
+    import providers
+    import thinking
+    captured = {}
+
+    def fake_post(url, body, headers, timeout_s):
+        captured["body"] = body
+        return {"choices": [{"message": {"content": "ok"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1}}
+
+    old_post, old_pref = providers._post_json, thinking.preference()
+    providers._post_json = fake_post
+    cfg = {"providers": {"local": {"enabled": True, "kind": "openai-compatible",
+                                   "base_url": "http://x/v1", "model": "m"}}}
+    try:
+        thinking.set_preference("on")
+        providers.call_openai_compatible("local", "sys", "user", cfg)
+        assert captured["body"]["chat_template_kwargs"] == {"enable_thinking": True}, captured["body"]
+
+        captured.clear()
+        thinking.set_preference("auto")
+        providers.call_openai_compatible("local", "sys", "user", cfg)
+        assert "chat_template_kwargs" not in captured["body"], "unset must send nothing"
+
+        # a per-provider setting in config beats the session preference
+        captured.clear()
+        thinking.set_preference("on")
+        cfg["providers"]["local"]["thinking"] = "off"
+        providers.call_openai_compatible("local", "sys", "user", cfg)
+        assert captured["body"]["chat_template_kwargs"] == {"enable_thinking": False}
+    finally:
+        providers._post_json = old_post
+        thinking.set_preference(old_pref if old_pref is not None else "auto")
+
+
+def test_control_line_is_a_setting_not_a_steering_message():
+    """A control line configures the session; it must never reach the model as
+    steering text, and it must not be mistaken for an answer to a prompt."""
+    import contextlib
+    import io as _io
+    import os
+    import time
+    import chat_ui
+    import thinking
+
+    read_fd, write_fd = os.pipe()
+    old_stdin, old_pref = sys.stdin, thinking.preference()
+    sys.stdin = os.fdopen(read_fd, encoding="utf-8")
+    buf = _io.StringIO()
+    control = '{"type": "control", "action": "set_thinking", "enabled": true}' + chr(10)
+    try:
+        with contextlib.redirect_stdout(buf):
+            broker = chat_ui.StdinBroker()
+            os.write(write_fd, control.encode("utf-8"))
+            os.write(write_fd, ("actually use a dataclass" + chr(10)).encode("utf-8"))
+            steering = ""
+            deadline = time.time() + 5.0
+            while time.time() < deadline and not steering:
+                steering = broker.take_steering()
+                time.sleep(0.02)
+        assert steering == "actually use a dataclass", (
+            "only the human message may become steering, got %r" % steering)
+        assert thinking.preference() is True, "the control line was applied"
+        assert '"type": "thinking"' in buf.getvalue(), "the frontend is told the new value"
+    finally:
+        sys.stdin = old_stdin
+        os.close(write_fd)
+        thinking.set_preference(old_pref if old_pref is not None else "auto")
+
+
 def _run_all():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
