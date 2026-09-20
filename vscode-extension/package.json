@@ -2,7 +2,7 @@
   "name": "apprentice-vscode",
   "displayName": "Apprentice",
   "description": "OpenCode-powered coding with your models, read-only chat, isolated edits, project checks, and task-specific diffs.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "publisher": "m-555",
   "license": "MIT",
   "repository": {
@@ -105,17 +105,17 @@
       },
       {
         "command": "apprentice.sessions",
-        "title": "Open a Past Session\u2026",
+        "title": "Open a Past Session…",
         "category": "Apprentice"
       },
       {
         "command": "apprentice.setProvider",
-        "title": "Select Model Provider\u2026",
+        "title": "Select Model Provider…",
         "category": "Apprentice"
       },
       {
         "command": "apprentice.setVerify",
-        "title": "Select Verification Mode\u2026",
+        "title": "Select Verification Mode…",
         "category": "Apprentice"
       },
       {
