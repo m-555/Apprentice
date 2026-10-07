@@ -39,7 +39,8 @@ apprentice catalog
 In VS Code open **Apprentice: Open Agent Panel**, select a model and Ask/Plan/Build,
 then chat. Save dirty editor buffers first: the snapshot uses files on disk.
 Short assistant progress, final answers and collapsed tool activity are shown;
-raw reasoning and internal compaction messages are not rendered as conversation.
+internal compaction messages are not rendered as conversation. With **Thinking** on,
+the model's private reasoning appears as a collapsed card, never as answer text.
 Formatting is deliberately conservative: plain text, inline code and fenced code.
 
 Roles focus one worker: General, Explorer, Implementer, Reviewer. Explorer and Reviewer

@@ -6,6 +6,37 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added — private reasoning (Thinking)
+- Choose whether a local model reasons privately before it answers. llama.cpp accepts
+  `chat_template_kwargs.enable_thinking` per request, so no model reload is needed.
+  `delegate` carries the choice in its own request body; chat, run and `assign` reach it
+  through the local router's shared default (`POST /thinking`, best effort). A
+  per-provider `thinking` value overrides the session preference for `delegate`. Unset
+  follows the router, so a fresh install sends the same requests as before.
+- Reasoning is emitted as a separate `reasoning_part` event, and the VS Code panel
+  renders it as a collapsed **Thinking** card. The panel's toggle is sent as a `control`
+  line, so it is never read by the model or treated as steering.
+
+### Fixed — `delegate` acceptance-test timeout is enforced
+- `delegate.test_timeout_s` now kills the whole process tree on timeout (`taskkill /T` on
+  Windows, a process-group kill on POSIX). Previously, on Windows, only the direct
+  `cmd.exe` child died, and an orphaned test holding the output pipe could wedge the MCP
+  server with unverified code left in the file. Tests run with no stdin and their output is
+  drained on a thread. The fix also covers `assign` and the agent's `verify=tests` path.
+- A run with no verdict (`test=error`) still reverts, but no longer bounces to the worker
+  or escalates to a paid tier. A failing revert is reported as `revert_failed`, naming
+  the file, instead of aborting `delegate`. `apply_code` failures are no longer hidden
+  behind a bare `applied=false`.
+
+### Fixed — local model output budget
+- Local providers declare `context_length` and `max_output_tokens`. OpenCode now gives local
+  models an 8K output budget by default (it was 4K), and `delegate` and the legacy loop send
+  `max_output_tokens` as `max_tokens`. A reply cut off at the limit reports that explicitly.
+
+### VS Code 0.2.1
+- Thinking toggle, and a panel layout that works from a pinned sidebar to full width.
+  See `vscode-extension/CHANGELOG.md`.
+
 ### Apprentice 0.3 / VS Code 0.2 — OpenCode task controller
 
 - Unified chat/run/MCP assign on OpenCode 1.18.25; Aider and the former chat loop are

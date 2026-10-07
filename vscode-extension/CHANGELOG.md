@@ -3,6 +3,24 @@
 All notable changes to the extension. The [Apprentice agent](https://github.com/m-555/Apprentice)
 itself is versioned separately; see its `CHANGELOG.md`.
 
+## [0.2.1]
+
+### Added
+
+- **Thinking toggle.** Choose whether a local model reasons privately before answering.
+  The toggle travels on the control channel, never as a chat message. When thinking is
+  on, the model's reasoning renders as a collapsed **Thinking** card instead of being
+  dropped. Blank reasoning shows nothing.
+
+### Fixed
+
+- **The panel works from a pinned sidebar to full width.** Selectors no longer overflow
+  their labels. A long transcript scrolls instead of pushing the composer off-screen, and
+  long tool output scrolls inside its card instead of spilling onto the next message.
+  Narrow panels stack the selectors, composer buttons and approvals. Wide panels centre
+  the transcript and composer in a 900px reading column. Pills, chips and tool details
+  truncate with an ellipsis instead of widening the panel.
+
 ## [0.2.0] — 2026-09-05
 
 - Requires Apprentice 0.3 with the OpenCode task controller.

@@ -18,8 +18,19 @@ stay read-only; these are not an automatic parallel team.
 
 The panel has streaming answers, collapsed tools, VS Code theme/fonts, multiline
 drafts, code-copy buttons, approvals, Stop, New Session, Resume and task-specific diffs.
-Raw reasoning and internal checkpoints stay out of chat. Mid-task messages queue;
-Stop cancels the active task and clears the queue.
+Internal checkpoints stay out of chat. Mid-task messages queue; Stop cancels the active
+task and clears the queue.
+
+**Thinking** lets a local model reason privately before it answers. Without it, a
+reasoning-trained model may deliberate at length inside its visible reply. When it is
+on, the model's reasoning appears as a collapsed **Thinking** card, separate from the
+answer. The toggle sets the local llama.cpp router's default, which applies to the next
+request with no model reload and is shared with other clients of that router. It is a
+setting, never sent to the model as a message, and cloud models ignore it.
+
+The layout works pinned in a narrow sidebar or opened full width. Narrow, the selectors,
+composer buttons and approvals stack. Wide, the transcript and composer sit in a
+reading column with Model, Mode, Role and Thinking on one row.
 
 ## Setup
 

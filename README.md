@@ -21,9 +21,10 @@ and enforces daily budgets.
 1. **Standalone agent** — `apprentice chat` gives you a coding agent in your terminal, driven by
    one model of your choice. No orchestrator subscription needed. Every change it makes is
    made in an isolated worktree and checked before delivery. → **[docs/AGENT.md](docs/AGENT.md)**
-2. **VS Code extension** — the same agent in a sidebar panel: streaming replies, tool activity,
-   verification badges, one-click diffs, and inline approval for shell commands.
-   → **[vscode-extension/](vscode-extension/)**
+2. **VS Code extension** — the same agent in a panel that fits a narrow sidebar or a full
+   editor tab: model/mode/role selectors, read-only Ask and Plan, verified Build, a Thinking
+   toggle, streaming replies, collapsed tool activity, inline command approval, and
+   task-specific diffs. → **[vscode-extension/](vscode-extension/)**
 3. **Delegation server** — an **MCP server** exposing `delegate`, `assign`, `log_correction`, so
    an orchestrator (Claude Code, …) can offload routine coding to cheaper models and stay the
    judge.
@@ -37,6 +38,25 @@ terms, what an "agent" is and how the boss + two-worker model fits together.
 
 > **Note:** the project was formerly `qwen-pipeline`. Its default working directory and the MCP
 > server id are still `qwen-pipeline` / `qwen`; only the project brand is **Apprentice**.
+
+### What's new
+
+- **VS Code 0.2.1: the panel works at any width.** Pinned in a narrow sidebar, the selectors,
+  composer buttons and approval buttons stack. In a full-width tab, the transcript and
+  composer sit in a 900px reading column with Model, Mode, Role and Thinking on one row. A
+  long transcript now scrolls instead of pushing the composer off the bottom.
+- **Thinking toggle.** Choose whether a local model reasons privately before it answers. When
+  it does, its reasoning appears as a collapsed **Thinking** card, separate from the answer.
+  See [Thinking](#thinking-private-reasoning).
+- **Output budgets for local models.** Providers declare `context_length` and
+  `max_output_tokens`, and local models now get an 8K output budget by default instead of 4K.
+  A reply that still hits the limit is reported as that, not as a generic failure. See
+  [the worker model](#the-worker-model--expert-offload).
+- **`delegate`'s test timeout is enforced.** A hung acceptance test is killed together with its
+  whole process tree, including on Windows. It no longer wedges the MCP server with unverified
+  code left in your file. See [The MCP tools](#the-mcp-tools).
+
+Full history: [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -155,6 +175,12 @@ The supervisor lives in `E:\projects\local-opencode`, advertises Qwen 3.8, Qwen 
 and DeepSeek through one OpenAI-compatible endpoint, and unloads the previous coding model
 before a switch. Nomic embeddings use a separate small CPU llama.cpp process.
 
+Give every local provider its real limits: `context_length` and `max_output_tokens` (the
+reference config uses 32K / 8K for Qwen and 16K / 8K for DeepSeek). OpenCode sessions use
+them for the model catalog; a local provider without `max_output_tokens` now defaults to 8K
+output (it was 4K). `delegate` and the legacy loop send `max_output_tokens` as the request's
+`max_tokens`, unless `options.max_tokens` is set explicitly.
+
 Ollama is deprecated as an Apprentice provider. The legacy `ollama-local` code path remains
 for old user configs, but this repository's default and machine-local config no longer call
 the Ollama API. Qwen Coder's existing GGUF needs a patched standalone llama.cpp runtime; that
@@ -200,13 +226,46 @@ extension, a web UI, or CI. Full guide: **[docs/AGENT.md](docs/AGENT.md)**.
 ### In VS Code
 
 ```bash
-cd vscode-extension && npm install && npm run package
-code --install-extension apprentice-vscode-0.2.0.vsix
+code --install-extension vscode-extension/apprentice-vscode-0.2.1.vsix   # prebuilt
+# or build it yourself:
+cd vscode-extension && npm ci && npm run package
 ```
 
 Then `Ctrl/Cmd+Shift+A` opens the agent panel in any repo. It drives the same CLI, so
 everything above (providers, verification, budgets) applies unchanged.
+
+- **Selectors:** model (read from your enabled `providers`), mode (**Ask** / **Plan** are
+  read-only; **Build** edits an isolated copy and checks it before delivery) and role
+  (General, Explorer, Implementer, Reviewer).
+- **Thinking toggle:** turns the local model's private reasoning on or off for the next
+  request, with no model reload. Its reasoning shows as a collapsed card. See
+  [Thinking](#thinking-private-reasoning).
+- **Conversation:** streamed answers, collapsed tool activity, code-copy buttons, VS Code
+  theme and fonts, and inline Allow/Deny for shell commands. Messages sent mid-task queue
+  for the next turn.
+- **Control:** Stop cancels the active task and clears the queue. New Session and Resume
+  wait for cleanup, and a resumed session replays its history and task-specific diffs.
+- **Layout:** works pinned in a narrow sidebar or opened full width. Narrow, the controls
+  stack. Wide, the transcript sits in a 900px reading column.
+
 See **[vscode-extension/README.md](vscode-extension/README.md)**.
+
+### Thinking (private reasoning)
+
+The local llama.cpp router starts models with reasoning **off**. A reasoning-trained model
+then has nowhere to deliberate except in its visible answer, so an open-ended question can
+come back as paragraphs of self-debate instead of a reply. llama.cpp accepts
+`chat_template_kwargs.enable_thinking` per request, so this choice needs no model reload.
+
+| Path | How the choice reaches the model |
+| --- | --- |
+| Panel (chat, run, `assign` via OpenCode) | The **Thinking** toggle sets the router's shared default (`POST /thinking` on the local router). This is router-wide: other clients of the same router follow it. If the router can't be reached, the session continues unchanged. |
+| `delegate` | Sends the choice in its own request body. Set `providers.<name>.thinking` (`true` / `false`) to pin it for one provider. |
+
+Unset means "follow the router", which is what a fresh install does. Requests are then
+identical to those sent before the toggle existed. The toggle travels on the panel's
+control channel, never as a chat message, so the model can't read a setting as an
+instruction.
 
 ---
 
@@ -237,6 +296,13 @@ returning.
   reaches the orchestrator (footer shows `test_tier=` when that happened).
 - `return_mode="summary"` — receive only the status footer + a one-line preview instead of the
   full code (it's already in the file and the output store).
+- **The test run is bounded.** `delegate.test_timeout_s` (default 300) is enforced: on timeout
+  the whole process tree is killed (`taskkill /T` on Windows, a process-group kill on POSIX).
+  The test runs with no stdin, so it can never block on the server's own MCP channel. A run
+  that produces **no verdict** (timed out, or could not start) is reported as `test=error`.
+  The file is reverted, but the worker is not retried and the task does not escalate to a paid
+  tier, because a stronger model can't fix a dead command. If the revert itself fails, the
+  footer says `revert_failed` and names the file to restore.
 
 A routine function then costs the orchestrator roughly: *task spec in, two-line footer out.*
 
@@ -300,7 +366,7 @@ The routing philosophy the pipeline is built around:
 
 | Tier | Strength | Cost | When |
 |------|----------|------|------|
-| local (`qwen`, or your Ollama model) | weakest | **free** | Start every routine task here. |
+| local (`qwen`, or any model on your llama.cpp router) | weakest | **free** | Start every routine task here. |
 | cloud routine (e.g. `gemini` flash, GPT-mini) | medium | cheap | GPU busy, or local keeps failing a routine task. |
 | cloud hard (e.g. `gemini` pro, GPT/Codex) | strong | pricier | Genuinely hard, well-specified tasks. |
 | the orchestrator itself | judgment | most expensive | Security, architecture, ambiguity — never delegated. |
@@ -390,26 +456,34 @@ qwen-pipeline/
 ├── LICENSE                       # MIT
 ├── requirements.txt              # core, PINNED (mcp, numpy)
 ├── requirements-gemini.txt       # optional: Gemini/Vertex provider
-├── requirements-aider.txt        # optional: the `assign` agent (install in .aider-venv)
+├── requirements-aider.txt        # legacy-only: the Aider `assign` backend (in .aider-venv)
 ├── config/
 │   ├── qwen.json                 # canonical config (committed, NO secrets)
 │   ├── qwen.local.example.json   # template for the gitignored local overlay
 │   ├── qwen.local.json           # GITIGNORED: project id, creds path, model ids, enabled flags
 │   └── routing.md                # what to delegate, to which provider/role/tier
 ├── docs/
+│   ├── AGENT.md                  # the current OpenCode agent: setup, verification, limits
+│   ├── OPENCODE.md               # local llama.cpp router + OpenCode setup, explained
+│   ├── TRY_IT.md                 # beginner walkthrough on a toy project
 │   ├── CONFIGURATION.md          # config reference + enabling Gemini
-│   └── MULTI_AGENT.md            # how the boss + two-worker model works (beginner-friendly)
+│   ├── MULTI_AGENT.md            # how the boss + two-worker model works (beginner-friendly)
+│   └── AGENT_LEGACY.md           # the pre-OpenCode loop and Aider backend
 ├── src/
 │   ├── cli.py                    # the `apprentice` command (init/chat/run/serve/doctor/…)
 │   ├── server.py                 # FastMCP stdio server: delegate / assign / log_correction
-│   ├── providers.py              # provider registry: ollama-local / openai-compatible / vertex-ai
+│   ├── opencode_*.py             # OpenCode task controller: client, config, tasks, transcript, UI events
+│   ├── workspace.py / task_checks.py  # isolated task snapshots; checks before delivery
+│   ├── lessons.py                # repository-scoped lessons from repaired failures
+│   ├── thinking.py               # private-reasoning preference (per request + router default)
+│   ├── providers.py              # provider registry: openai-compatible / vertex-ai (+ legacy ollama)
 │   ├── chat_providers.py         # multi-turn chat + tool calls, normalized across providers
-│   ├── loop.py / session.py      # the agent loop; history, repo map, compaction, transcripts
-│   ├── tools.py / verify.py      # agent tools (repo-scoped) ; snapshot → check → revert
-│   ├── chat_ui.py                # the REPL for `apprentice chat` / `apprentice run`
+│   ├── chat_ui.py                # terminal REPL + the `--json` event/control stream
 │   ├── deliver.py                # server-side context fetch + apply/test/revert (token-cheap mode)
 │   ├── budgets.py / corrections.py  # shared daily caps; the corrections writer
-│   ├── agent.py                  # the `assign` file-aware agent (Aider + disposable worktree)
+│   ├── agent.py                  # legacy Aider `assign` backend (agent.backend="aider")
+│   ├── loop.py / tools.py / verify.py  # the legacy standalone loop (--backend legacy)
+│   ├── session.py                # saved session transcripts (`apprentice sessions`)
 │   ├── gate.py / gate_cli.py     # mechanical gate (compile/lint) + worker-retry
 │   ├── store.py                  # output-id store + unified-diff apply
 │   ├── retrieval.py              # embed + cosine retrieval of past corrections
@@ -418,9 +492,13 @@ qwen-pipeline/
 │   └── roles.py                  # role -> system-prompt map
 ├── vscode-extension/             # the VS Code frontend (TypeScript; spawns the CLI)
 │   ├── src/                      # locate/config/protocol/agentProcess/chatView/…
-│   ├── media/                    # webview assets (theme-aware CSS, no external deps)
-│   └── src/test/                 # node:test units + a fake-agent fixture (offline)
-├── tests/test_pipeline.py        # deterministic, offline (stubs providers/embeddings)
+│   ├── media/                    # webview assets (theme-aware, responsive CSS; no external deps)
+│   ├── src/test/                 # node:test units + a fake-agent fixture (offline)
+│   └── apprentice-vscode-*.vsix  # prebuilt packages
+├── tests/
+│   ├── test_pipeline.py          # deterministic, offline (stubs providers/embeddings)
+│   ├── test_opencode.py          # OpenCode controller contract tests (offline by default)
+│   └── live_opencode.py          # opt-in live-GPU probes
 └── corrections/                  # GITIGNORED contents: corrections + retrieval index (local only)
 ```
 
@@ -436,11 +514,16 @@ Gitignored (never pushed): `config/qwen.local.json`, `secrets/`, `corrections/*.
 | Local model endpoint unreachable | Start the shared llama.cpp supervisor; check `apprentice doctor`. Ollama is legacy-only. |
 | MCP server not connected | Run the launch command directly to see the error: `.venv/Scripts/python.exe src/server.py` |
 | New tools not visible in a running session | They load in new sessions automatically; in a running one, reconnect (e.g. `/mcp`). |
-| A pull fills the wrong disk | Ollama isn't using your intended path — see the model-storage gotcha above. |
-| VRAM near OOM with big context | Cap `num_ctx` (KV cache grows with context). Prefer this over downgrading the quant. |
+| VRAM near OOM with big context | Lower the model's context in the llama.cpp supervisor (KV cache grows with context), and match `context_length` in config. Prefer this over downgrading the quant. |
+| "The model exhausted its output-token limit…" | The reply hit `max_output_tokens` before it finished. Narrow the request, raise the provider's `max_output_tokens`, or pick another model. |
+| Answers full of "wait, let me reconsider…" | A reasoning-trained model with thinking off is deliberating in its answer. Turn on **Thinking** in the panel, or set `providers.<name>.thinking` for `delegate`. |
+| Thinking toggle has no effect on chat | It sets the local router's default. The router must be running and reachable at `runner.host`; cloud providers ignore it. |
+| VS Code panel controls clipped or composer off-screen | Update to extension 0.2.1, which reflows the panel for narrow sidebars and wide tabs. |
 | Gemini "not enabled yet" | Expected until Vertex creds are configured — see [Enabling Gemini](#enabling-gemini-vertex-ai). |
 | "Daily token/USD budget … exhausted" | Working as intended — the provider hit its `metering.budgets` cap. Use the local provider or raise the cap in `qwen.local.json`. |
 | `delegate` `test=fail — REVERTED` | The worker never satisfied `test_cmd`; the target file was restored. Review the test output tail in the footer, tighten the task/spec, or take the task yourself. |
+| `delegate` `test=error` (no verdict) | The acceptance command timed out or couldn't start; the file was reverted and the worker was not retried. Fix the command, or raise `delegate.test_timeout_s` if the suite is legitimately slow. |
+| `delegate` footer says `revert_failed` | The worker's code could not be removed after a failed test. Restore the named file yourself before continuing. |
 | Retrieval not injecting examples | Index empty/stale or embedder down. Rebuild: `python src/retrieval.py reindex`. |
 
 ---
@@ -460,10 +543,18 @@ Gitignored (never pushed): `config/qwen.local.json`, `secrets/`, `corrections/*.
 
 ## Documentation
 
+- **[docs/AGENT.md](docs/AGENT.md)** — the current OpenCode agent: setup, Ask/Plan/Build,
+  verification and safe delivery, models and spending, and the limits of verification.
+- **[docs/TRY_IT.md](docs/TRY_IT.md)** — a first session on a toy project with the free local model.
+- **[docs/OPENCODE.md](docs/OPENCODE.md)** — the local llama.cpp router and OpenCode setup,
+  including model vs. inference engine vs. agent runtime.
+- **[vscode-extension/README.md](vscode-extension/README.md)** — the VS Code panel: setup,
+  settings and development.
 - **[docs/MULTI_AGENT.md](docs/MULTI_AGENT.md)** — how the boss + two-worker model works, in
   beginner terms (what an agent is; Claude Code vs. Aider vs. Codex vs. OpenClaw; who does what).
 - **[docs/CONFIGURATION.md](docs/CONFIGURATION.md)** — full config reference, the committed vs.
   local overlay, and enabling the Gemini/Vertex worker.
+- **[docs/AGENT_LEGACY.md](docs/AGENT_LEGACY.md)** — the pre-OpenCode loop and Aider backend.
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** — dev setup, tests, and ground rules.
 - **[CHANGELOG.md](CHANGELOG.md)** — notable changes.
 
